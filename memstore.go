@@ -312,3 +312,41 @@ func cloneAPIKey(k *APIKey) *APIKey {
 }
 
 var _ VaultStore = (*MemStore)(nil)
+
+// MemTransferLog is the in-memory reference TransferLog — the append-only sink a durable log must
+// match. Thread-safe; events are returned in the order recorded.
+type MemTransferLog struct {
+	mu     sync.Mutex
+	events []*TransferEvent
+}
+
+// NewMemTransferLog builds an empty transfer log.
+func NewMemTransferLog() *MemTransferLog { return &MemTransferLog{} }
+
+func (l *MemTransferLog) Record(_ context.Context, e *TransferEvent) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cp := *e // TransferEvent holds no maps/pointers, so a shallow copy fully isolates it
+	l.events = append(l.events, &cp)
+	return nil
+}
+
+// List returns every recorded event where the entity is the edge source or target, owner-scoped ("" =
+// any owner).
+func (l *MemTransferLog) List(_ context.Context, owner, entity string) ([]*TransferEvent, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []*TransferEvent
+	for _, e := range l.events {
+		if !ownerMatch(owner, e.Owner) {
+			continue
+		}
+		if e.From == entity || e.To == entity {
+			cp := *e
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+var _ TransferLog = (*MemTransferLog)(nil)
