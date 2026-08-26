@@ -7,15 +7,14 @@ import (
 	"github.com/bbmumford/nexus"
 )
 
-func newGraphService(t *testing.T) (*GraphService, nexus.GraphStore, *MemTransferLog) {
+func newGraphServiceWith(t *testing.T, log TransferLog) (*GraphService, nexus.GraphStore) {
 	t.Helper()
 	g := nexus.NewMemStore()
-	log := NewMemTransferLog()
 	s, err := NewGraphService(GraphConfig{Graph: g, Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, g, log
+	return s, g
 }
 
 func TestGraph_RequiresLog(t *testing.T) {
@@ -28,60 +27,59 @@ func TestGraph_RequiresLog(t *testing.T) {
 }
 
 func TestGraph_GrantRevokeRecordsProvenance(t *testing.T) {
-	s, g, log := newGraphService(t)
-	meta := ChangeMeta{Owner: "acme", Trigger: "admin-1", Source: "admin", Auto: false}
-	if err := s.Grant(ctx, "user-1", "org-9", "member", map[string]string{"role": "admin"}, meta); err != nil {
-		t.Fatal(err)
-	}
-	// the edge is in the graph
-	if ok, _ := g.HasRelationship(ctx, "user-1", "org-9", "member"); !ok {
-		t.Fatal("Grant must create the edge")
-	}
-	// the change is recorded with provenance
-	hist, _ := s.History(ctx, "acme", "org-9")
-	if len(hist) != 1 || hist[0].Change != "grant" || hist[0].Trigger != "admin-1" {
-		t.Fatalf("Grant must record a provenance-stamped transfer; got %+v", hist)
-	}
-	// revoke removes the edge and records a second event
-	if err := s.Revoke(ctx, "user-1", "org-9", "member", ChangeMeta{Owner: "acme", Source: "admin"}); err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := g.HasRelationship(ctx, "user-1", "org-9", "member"); ok {
-		t.Fatal("Revoke must remove the edge")
-	}
-	if hist, _ := s.History(ctx, "acme", "org-9"); len(hist) != 2 || hist[1].Change != "revoke" {
-		t.Fatalf("Revoke must append a revoke event; got %+v", hist)
-	}
-	_ = log
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		s, g := newGraphServiceWith(t, log)
+		meta := ChangeMeta{Owner: "acme", Trigger: "admin-1", Source: "admin", Auto: false}
+		if err := s.Grant(ctx, "user-1", "org-9", "member", map[string]string{"role": "admin"}, meta); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := g.HasRelationship(ctx, "user-1", "org-9", "member"); !ok {
+			t.Fatal("Grant must create the edge")
+		}
+		hist, _ := s.History(ctx, "acme", "org-9")
+		if len(hist) != 1 || hist[0].Change != "grant" || hist[0].Trigger != "admin-1" {
+			t.Fatalf("Grant must record a provenance-stamped transfer; got %+v", hist)
+		}
+		if err := s.Revoke(ctx, "user-1", "org-9", "member", ChangeMeta{Owner: "acme", Source: "admin"}); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := g.HasRelationship(ctx, "user-1", "org-9", "member"); ok {
+			t.Fatal("Revoke must remove the edge")
+		}
+		if hist, _ := s.History(ctx, "acme", "org-9"); len(hist) != 2 || hist[1].Change != "revoke" {
+			t.Fatalf("Revoke must append a revoke event; got %+v", hist)
+		}
+	})
 }
 
 func TestGraph_MinIncomingGuardBlocksLastEdge(t *testing.T) {
-	s, g, _ := newGraphService(t)
-	m := ChangeMeta{Owner: "acme"}
-	s.Grant(ctx, "user-1", "org-9", "owner", nil, m)
-	s.Grant(ctx, "user-2", "org-9", "owner", nil, m)
-	// two owners: removing one is allowed (guard requires ≥1 remaining)
-	guard := MinIncoming("owner", "org-9", 1)
-	if err := s.Revoke(ctx, "user-1", "org-9", "owner", m, guard); err != nil {
-		t.Fatalf("removing one of two owners must be allowed; got %v", err)
-	}
-	// one owner left: the guard now blocks removing the last, and leaves the edge intact
-	if err := s.Revoke(ctx, "user-2", "org-9", "owner", m, MinIncoming("owner", "org-9", 1)); !errors.Is(err, ErrGuardViolation) {
-		t.Fatalf("removing the last owner must be ErrGuardViolation; got %v", err)
-	}
-	if ok, _ := g.HasRelationship(ctx, "user-2", "org-9", "owner"); !ok {
-		t.Fatal("a blocked revoke must leave the edge intact (fail-closed)")
-	}
-	// and the blocked revoke recorded no event
-	if hist, _ := s.History(ctx, "acme", "org-9"); len(hist) != 3 {
-		t.Fatalf("a blocked revoke must record nothing; want 3 events (2 grant + 1 revoke), got %d", len(hist))
-	}
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		s, g := newGraphServiceWith(t, log)
+		m := ChangeMeta{Owner: "acme"}
+		s.Grant(ctx, "user-1", "org-9", "owner", nil, m)
+		s.Grant(ctx, "user-2", "org-9", "owner", nil, m)
+		// two owners: removing one is allowed (guard requires ≥1 remaining)
+		if err := s.Revoke(ctx, "user-1", "org-9", "owner", m, MinIncoming("owner", "org-9", 1)); err != nil {
+			t.Fatalf("removing one of two owners must be allowed; got %v", err)
+		}
+		// one owner left: the guard blocks removing the last, and leaves the edge intact
+		if err := s.Revoke(ctx, "user-2", "org-9", "owner", m, MinIncoming("owner", "org-9", 1)); !errors.Is(err, ErrGuardViolation) {
+			t.Fatalf("removing the last owner must be ErrGuardViolation; got %v", err)
+		}
+		if ok, _ := g.HasRelationship(ctx, "user-2", "org-9", "owner"); !ok {
+			t.Fatal("a blocked revoke must leave the edge intact (fail-closed)")
+		}
+		// the blocked revoke recorded no event: 2 grants + 1 successful revoke = 3
+		if hist, _ := s.History(ctx, "acme", "org-9"); len(hist) != 3 {
+			t.Fatalf("a blocked revoke must record nothing; want 3 events, got %d", len(hist))
+		}
+	})
 }
 
 // TestGraph_ResolveIsGeneral proves the same resolver answers different relationship questions — not
 // just ownership — by the consumer's ladder alone, over overlapping arbitrary-depth paths.
 func TestGraph_ResolveIsGeneral(t *testing.T) {
-	s, _, _ := newGraphService(t)
+	s, _ := newGraphServiceWith(t, NewMemTransferLog())
 	m := ChangeMeta{Owner: "acme"}
 	// graph: user-1 --member--> team-a --owns--> project-x ; user-1 --assignee--> ticket-7
 	s.Grant(ctx, "user-1", "team-a", "member", nil, m)
