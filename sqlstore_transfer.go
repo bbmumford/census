@@ -7,7 +7,7 @@ import (
 
 // SQLTransferLog is the durable default TransferLog over any database/sql driver — the shipped
 // append-only sink for relationship-change provenance. Like SQLVaultStore it imports only stdlib
-// database/sql; the app supplies the driver + *sql.DB. Owner is opaque; "" on List matches any owner.
+// database/sql; the app supplies the driver + *sql.DB. Partition is opaque; "" on List matches any partition.
 type SQLTransferLog struct{ db *sql.DB }
 
 // NewSQLTransferLog builds a log over an opened *sql.DB. Call InitSchema once before use.
@@ -19,7 +19,7 @@ var _ TransferLog = (*SQLTransferLog)(nil)
 func (l *SQLTransferLog) InitSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS census_transfers (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', from_id TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', from_id TEXT NOT NULL DEFAULT '',
 			to_id TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', change TEXT NOT NULL DEFAULT '',
 			trigger TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', auto INTEGER NOT NULL DEFAULT 0,
 			at INTEGER NOT NULL DEFAULT 0, seq INTEGER
@@ -47,18 +47,18 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 	// seq is the next monotonic ordinal so List returns events in the order recorded, tie-breaking a
 	// shared `at`. COALESCE(MAX,0)+1 is evaluated in the same statement.
 	_, err := l.db.ExecContext(ctx, `INSERT INTO census_transfers
-		(id, owner, from_id, to_id, type, change, trigger, source, auto, at, seq)
+		(id, partition, from_id, to_id, type, change, trigger, source, auto, at, seq)
 		VALUES (?,?,?,?,?,?,?,?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM census_transfers))`,
-		e.ID, e.Owner, e.From, e.To, e.Type, e.Change, e.Trigger, e.Source, auto, tnanos(e.At))
+		e.ID, e.Partition, e.From, e.To, e.Type, e.Change, e.Trigger, e.Source, auto, tnanos(e.At))
 	return err
 }
 
-// List returns every recorded event where the entity is the edge source or target, owner-scoped ("" =
-// any owner), in the order recorded.
-func (l *SQLTransferLog) List(ctx context.Context, owner, entity string) ([]*TransferEvent, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT id, owner, from_id, to_id, type, change, trigger, source,
-		auto, at FROM census_transfers WHERE (? = '' OR owner = ?) AND (from_id = ? OR to_id = ?)
-		ORDER BY seq ASC`, owner, owner, entity, entity)
+// List returns every recorded event where the entity is the edge source or target, partition-scoped ("" =
+// any partition), in the order recorded.
+func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
+	rows, err := l.db.QueryContext(ctx, `SELECT id, partition, from_id, to_id, type, change, trigger, source,
+		auto, at FROM census_transfers WHERE (? = '' OR partition = ?) AND (from_id = ? OR to_id = ?)
+		ORDER BY seq ASC`, partition, partition, entity, entity)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (l *SQLTransferLog) List(ctx context.Context, owner, entity string) ([]*Tra
 		var e TransferEvent
 		var auto int
 		var at int64
-		if err := rows.Scan(&e.ID, &e.Owner, &e.From, &e.To, &e.Type, &e.Change, &e.Trigger, &e.Source,
+		if err := rows.Scan(&e.ID, &e.Partition, &e.From, &e.To, &e.Type, &e.Change, &e.Trigger, &e.Source,
 			&auto, &at); err != nil {
 			return nil, err
 		}

@@ -7,7 +7,7 @@
 // FEATURES that carry secrets and cannot be opaque graph attributes: credentials, email verification,
 // invitations, and API keys. Those reuse the proven crypto seam — a secret is encrypted at rest behind
 // an injected Encryptor with a separate deterministic hash for lookup/uniqueness, and raw tokens are
-// minted once and stored only as hashes. The owner-scope is opaque; times are time.Time; a nil
+// minted once and stored only as hashes. The partition-scope is opaque; times are time.Time; a nil
 // *time.Time means "not yet".
 package census
 
@@ -20,7 +20,7 @@ import "time"
 // plaintext password.
 type Credential struct {
 	ID             string
-	Owner          string // opaque owner-scope
+	Partition          string // opaque partition-scope
 	Subject        string // opaque graph entity id this credential authenticates
 	Kind           string // opaque credential type
 	IdentifierHash string // deterministic hash of the normalized login identifier
@@ -34,7 +34,7 @@ type Credential struct {
 // (by the raw token) marks the subject's email verified in the consumer's graph.
 type EmailVerification struct {
 	ID            string
-	Owner         string // opaque owner-scope
+	Partition         string // opaque partition-scope
 	Subject       string // opaque graph entity id being verified
 	IdentifierEnc string // encrypted email address
 	Identifier    string // deterministic hash of the normalized email (lookup)
@@ -51,7 +51,7 @@ type EmailVerification struct {
 // never interprets these; the accept step hands them to the graph.
 type Invitation struct {
 	ID            string
-	Owner         string // opaque owner-scope
+	Partition         string // opaque partition-scope
 	IdentifierEnc string // encrypted invitee email
 	Identifier    string // deterministic hash of the normalized email (lookup)
 	TokenHash     string // hash of the raw invite token
@@ -69,7 +69,7 @@ type Invitation struct {
 // Capabilities is the opaque capability set the consumer's authorizer interprets.
 type APIKey struct {
 	ID           string
-	Owner        string // opaque owner-scope
+	Partition        string // opaque partition-scope
 	Subject      string // opaque graph entity id the key authenticates as
 	Label        string
 	KeyHash      string // hash of the raw key

@@ -10,8 +10,8 @@ import (
 // SQLVaultStore is the durable default VaultStore over any database/sql driver — the shipped standalone
 // store. The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and
 // registers the driver (go-libsql/Turso, modernc, Postgres), so census pulls no driver dependency yet
-// works out of the box. Owner is an opaque column the store filters on but never interprets; an empty
-// owner ("") on an owner-scoped read matches any owner. Times persist as INTEGER Unix nanoseconds with
+// works out of the box. Partition is an opaque column the store filters on but never interprets; an empty
+// partition ("") on an partition-scoped read matches any partition. Times persist as INTEGER Unix nanoseconds with
 // NULL for an unset *time.Time. Only sealed material is stored (encrypted emails, deterministic hashes,
 // Hasher digests). The VaultStore interface stays the escape-hatch for a mesh gateway or MemStore.
 type SQLVaultStore struct{ db *sql.DB }
@@ -25,23 +25,23 @@ var _ VaultStore = (*SQLVaultStore)(nil)
 func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS census_credentials (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
 			kind TEXT NOT NULL DEFAULT '', identifier_hash TEXT NOT NULL DEFAULT '',
 			secret TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
 		// The login identifier is unique per credential kind — a second subject cannot claim it.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_census_cred_identity ON census_credentials(kind, identifier_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_cred_subject ON census_credentials(owner, subject)`,
+		`CREATE INDEX IF NOT EXISTS idx_census_cred_subject ON census_credentials(partition, subject)`,
 		`CREATE TABLE IF NOT EXISTS census_email_verifications (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
 			identifier_enc TEXT NOT NULL DEFAULT '', identifier TEXT NOT NULL DEFAULT '',
 			token_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0,
 			expires_at INTEGER, consumed_at INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_verify_token ON census_email_verifications(token_hash)`,
 		`CREATE TABLE IF NOT EXISTS census_invitations (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', identifier_enc TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', identifier_enc TEXT NOT NULL DEFAULT '',
 			identifier TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL DEFAULT '',
 			grant_to TEXT NOT NULL DEFAULT '', grant_type TEXT NOT NULL DEFAULT '',
 			grant_attrs TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT '',
@@ -50,13 +50,13 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_census_invite_token ON census_invitations(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_invite_pending ON census_invitations(identifier, grant_to, status)`,
 		`CREATE TABLE IF NOT EXISTS census_api_keys (
-			id TEXT PRIMARY KEY, owner TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
 			label TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '',
 			capabilities TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL DEFAULT 0,
 			expires_at INTEGER, revoked_at INTEGER, last_used_at INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_apikey_hash ON census_api_keys(key_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_apikey_subject ON census_api_keys(owner, subject)`,
+		`CREATE INDEX IF NOT EXISTS idx_census_apikey_subject ON census_api_keys(partition, subject)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -145,12 +145,12 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 		return ErrConflict
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO census_credentials
-		(id, owner, subject, kind, identifier_hash, secret, created_at, updated_at)
+		(id, partition, subject, kind, identifier_hash, secret, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, subject=excluded.subject,
+		ON CONFLICT(id) DO UPDATE SET partition=excluded.partition, subject=excluded.subject,
 			kind=excluded.kind, identifier_hash=excluded.identifier_hash, secret=excluded.secret,
 			updated_at=excluded.updated_at`,
-		c.ID, c.Owner, c.Subject, c.Kind, c.IdentifierHash, c.Secret, tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
+		c.ID, c.Partition, c.Subject, c.Kind, c.IdentifierHash, c.Secret, tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -159,7 +159,7 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 func scanCredential(sc interface{ Scan(...any) error }) (*Credential, error) {
 	var c Credential
 	var created, updated int64
-	if err := sc.Scan(&c.ID, &c.Owner, &c.Subject, &c.Kind, &c.IdentifierHash, &c.Secret, &created, &updated); err != nil {
+	if err := sc.Scan(&c.ID, &c.Partition, &c.Subject, &c.Kind, &c.IdentifierHash, &c.Secret, &created, &updated); err != nil {
 		return nil, err
 	}
 	c.CreatedAt = fromNanos(created)
@@ -167,7 +167,7 @@ func scanCredential(sc interface{ Scan(...any) error }) (*Credential, error) {
 	return &c, nil
 }
 
-const credentialCols = `id, owner, subject, kind, identifier_hash, secret, created_at, updated_at`
+const credentialCols = `id, partition, subject, kind, identifier_hash, secret, created_at, updated_at`
 
 func (s *SQLVaultStore) GetCredentialByIdentifier(ctx context.Context, kind, identifierHash string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+credentialCols+` FROM census_credentials
@@ -179,9 +179,9 @@ func (s *SQLVaultStore) GetCredentialByIdentifier(ctx context.Context, kind, ide
 	return c, err
 }
 
-func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, owner, subject string) ([]*Credential, error) {
+func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, partition, subject string) ([]*Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+credentialCols+` FROM census_credentials
-		WHERE (? = '' OR owner = ?) AND subject = ? ORDER BY created_at ASC`, owner, owner, subject)
+		WHERE (? = '' OR partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -197,9 +197,9 @@ func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, owner, sub
 	return out, rows.Err()
 }
 
-func (s *SQLVaultStore) DeleteCredential(ctx context.Context, owner, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM census_credentials WHERE id = ? AND (? = '' OR owner = ?)`,
-		id, owner, owner)
+func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM census_credentials WHERE id = ? AND (? = '' OR partition = ?)`,
+		id, partition, partition)
 	if err != nil {
 		return err
 	}
@@ -216,20 +216,20 @@ func (s *SQLVaultStore) PutEmailVerification(ctx context.Context, v *EmailVerifi
 		v.ID = randomID()
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO census_email_verifications
-		(id, owner, subject, identifier_enc, identifier, token_hash, created_at, expires_at, consumed_at)
+		(id, partition, subject, identifier_enc, identifier, token_hash, created_at, expires_at, consumed_at)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
-		v.ID, v.Owner, v.Subject, v.IdentifierEnc, v.Identifier, v.TokenHash, tnanos(v.CreatedAt),
+		v.ID, v.Partition, v.Subject, v.IdentifierEnc, v.Identifier, v.TokenHash, tnanos(v.CreatedAt),
 		ptrNanos(v.ExpiresAt), ptrNanos(v.ConsumedAt))
 	return err
 }
 
 func (s *SQLVaultStore) GetEmailVerificationByToken(ctx context.Context, tokenHash string) (*EmailVerification, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, owner, subject, identifier_enc, identifier, token_hash,
+	row := s.db.QueryRowContext(ctx, `SELECT id, partition, subject, identifier_enc, identifier, token_hash,
 		created_at, expires_at, consumed_at FROM census_email_verifications WHERE token_hash = ? LIMIT 1`, tokenHash)
 	var v EmailVerification
 	var created int64
 	var expires, consumed sql.NullInt64
-	if err := row.Scan(&v.ID, &v.Owner, &v.Subject, &v.IdentifierEnc, &v.Identifier, &v.TokenHash,
+	if err := row.Scan(&v.ID, &v.Partition, &v.Subject, &v.IdentifierEnc, &v.Identifier, &v.TokenHash,
 		&created, &expires, &consumed); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrNotFound
@@ -276,16 +276,16 @@ func (s *SQLVaultStore) PutInvitation(ctx context.Context, i *Invitation) error 
 		return ErrConflict
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO census_invitations
-		(id, owner, identifier_enc, identifier, token_hash, grant_to, grant_type, grant_attrs, status,
+		(id, partition, identifier_enc, identifier, token_hash, grant_to, grant_type, grant_attrs, status,
 		created_at, expires_at, accepted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		i.ID, i.Owner, i.IdentifierEnc, i.Identifier, i.TokenHash, i.GrantTo, i.GrantType,
+		i.ID, i.Partition, i.IdentifierEnc, i.Identifier, i.TokenHash, i.GrantTo, i.GrantType,
 		jsonStrMap(i.GrantAttrs), i.Status, tnanos(i.CreatedAt), ptrNanos(i.ExpiresAt), ptrNanos(i.AcceptedAt)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-const invitationCols = `id, owner, identifier_enc, identifier, token_hash, grant_to, grant_type,
+const invitationCols = `id, partition, identifier_enc, identifier, token_hash, grant_to, grant_type,
 	grant_attrs, status, created_at, expires_at, accepted_at`
 
 func scanInvitation(sc interface{ Scan(...any) error }) (*Invitation, error) {
@@ -293,7 +293,7 @@ func scanInvitation(sc interface{ Scan(...any) error }) (*Invitation, error) {
 	var attrs string
 	var created int64
 	var expires, accepted sql.NullInt64
-	if err := sc.Scan(&i.ID, &i.Owner, &i.IdentifierEnc, &i.Identifier, &i.TokenHash, &i.GrantTo,
+	if err := sc.Scan(&i.ID, &i.Partition, &i.IdentifierEnc, &i.Identifier, &i.TokenHash, &i.GrantTo,
 		&i.GrantType, &attrs, &i.Status, &created, &expires, &accepted); err != nil {
 		return nil, err
 	}
@@ -324,10 +324,10 @@ func (s *SQLVaultStore) GetPendingInvitation(ctx context.Context, identifierHash
 	return i, err
 }
 
-func (s *SQLVaultStore) ListInvitationsByOwner(ctx context.Context, owner, statusFilter string) ([]*Invitation, error) {
+func (s *SQLVaultStore) ListInvitationsByPartition(ctx context.Context, partition, statusFilter string) ([]*Invitation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+invitationCols+` FROM census_invitations
-		WHERE (? = '' OR owner = ?) AND (? = '' OR status = ?) ORDER BY created_at DESC`,
-		owner, owner, statusFilter, statusFilter)
+		WHERE (? = '' OR partition = ?) AND (? = '' OR status = ?) ORDER BY created_at DESC`,
+		partition, partition, statusFilter, statusFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -368,21 +368,21 @@ func (s *SQLVaultStore) PutAPIKey(ctx context.Context, k *APIKey) error {
 		k.ID = randomID()
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO census_api_keys
-		(id, owner, subject, label, key_hash, capabilities, created_at, expires_at, revoked_at, last_used_at)
+		(id, partition, subject, label, key_hash, capabilities, created_at, expires_at, revoked_at, last_used_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		k.ID, k.Owner, k.Subject, k.Label, k.KeyHash, jsonSlice(k.Capabilities), tnanos(k.CreatedAt),
+		k.ID, k.Partition, k.Subject, k.Label, k.KeyHash, jsonSlice(k.Capabilities), tnanos(k.CreatedAt),
 		ptrNanos(k.ExpiresAt), ptrNanos(k.RevokedAt), ptrNanos(k.LastUsedAt))
 	return err
 }
 
-const apiKeyCols = `id, owner, subject, label, key_hash, capabilities, created_at, expires_at, revoked_at, last_used_at`
+const apiKeyCols = `id, partition, subject, label, key_hash, capabilities, created_at, expires_at, revoked_at, last_used_at`
 
 func scanAPIKey(sc interface{ Scan(...any) error }) (*APIKey, error) {
 	var k APIKey
 	var caps string
 	var created int64
 	var expires, revoked, lastUsed sql.NullInt64
-	if err := sc.Scan(&k.ID, &k.Owner, &k.Subject, &k.Label, &k.KeyHash, &caps, &created,
+	if err := sc.Scan(&k.ID, &k.Partition, &k.Subject, &k.Label, &k.KeyHash, &caps, &created,
 		&expires, &revoked, &lastUsed); err != nil {
 		return nil, err
 	}
@@ -403,9 +403,9 @@ func (s *SQLVaultStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*A
 	return k, err
 }
 
-func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, owner, subject string) ([]*APIKey, error) {
+func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, partition, subject string) ([]*APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+apiKeyCols+` FROM census_api_keys
-		WHERE (? = '' OR owner = ?) AND subject = ? ORDER BY created_at ASC`, owner, owner, subject)
+		WHERE (? = '' OR partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -421,9 +421,9 @@ func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, owner, subject
 	return out, rows.Err()
 }
 
-func (s *SQLVaultStore) RevokeAPIKey(ctx context.Context, owner, id string, revokedAt int64) error {
+func (s *SQLVaultStore) RevokeAPIKey(ctx context.Context, partition, id string, revokedAt int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE census_api_keys SET revoked_at = COALESCE(revoked_at, ?)
-		WHERE id = ? AND (? = '' OR owner = ?)`, revokedAt, id, owner, owner)
+		WHERE id = ? AND (? = '' OR partition = ?)`, revokedAt, id, partition, partition)
 	if err != nil {
 		return err
 	}

@@ -13,7 +13,7 @@ func (e *configError) Error() string { return e.msg }
 
 // Service is the account-features façade: it owns the crypto seam over a VaultStore and exposes the
 // reusable operations (register a credential, authenticate, issue + consume email verifications and
-// invitations, mint + verify API keys). It interprets no axis — Owner and Subject are opaque graph
+// invitations, mint + verify API keys). It interprets no axis — Partition and Subject are opaque graph
 // ids the consumer assigns. The relationship graph (memberships, roles, org hierarchy) is the nexus
 // store's concern; a consumer wires the accepted invitation's opaque grant into nexus itself.
 type Service struct {
@@ -74,14 +74,14 @@ var ErrExpired = errors.New("census: expired")
 // RegisterPassword creates a password credential binding an opaque subject to a login identifier. The
 // identifier (email/username) is normalized and stored only as a deterministic hash; the password is
 // stored only as the injected Hasher's digest. A duplicate identifier for the kind returns ErrConflict.
-func (s *Service) RegisterPassword(ctx context.Context, owner, subject, identifier, password string) (*Credential, error) {
+func (s *Service) RegisterPassword(ctx context.Context, partition, subject, identifier, password string) (*Credential, error) {
 	digest, err := s.hasher.Hash(password)
 	if err != nil {
 		return nil, err
 	}
 	now := s.now()
 	c := &Credential{
-		Owner:          owner,
+		Partition:          partition,
 		Subject:        subject,
 		Kind:           "password",
 		IdentifierHash: hashHex(normalizeEmail(identifier)),
@@ -116,7 +116,7 @@ func (s *Service) Authenticate(ctx context.Context, identifier, password string)
 // IssueEmailVerification mints a raw verification token for a subject's email and stores the challenge
 // (email encrypted at rest + deterministic hash, token stored only as a hash). The RAW token is
 // returned once for the confirmation link and is never recoverable from the store.
-func (s *Service) IssueEmailVerification(ctx context.Context, owner, subject, email string, ttl time.Duration) (rawToken string, err error) {
+func (s *Service) IssueEmailVerification(ctx context.Context, partition, subject, email string, ttl time.Duration) (rawToken string, err error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return "", errors.New("census: empty email")
@@ -128,7 +128,7 @@ func (s *Service) IssueEmailVerification(ctx context.Context, owner, subject, em
 	rawToken = s.newToken()
 	now := s.now()
 	v := &EmailVerification{
-		Owner:         owner,
+		Partition:         partition,
 		Subject:       subject,
 		IdentifierEnc: ciphertext,
 		Identifier:    hashHex(email),
@@ -168,7 +168,7 @@ func (s *Service) ConfirmEmail(ctx context.Context, rawToken string) (subject st
 // grantType onto grantTo, with grantAttrs) on acceptance. The email is encrypted at rest with a
 // deterministic hash; the raw token is returned once for the invite link. A still-pending invitation
 // for the same email + target returns ErrConflict.
-func (s *Service) Invite(ctx context.Context, owner, email, grantTo, grantType string, grantAttrs map[string]string, ttl time.Duration) (rawToken string, inv *Invitation, err error) {
+func (s *Service) Invite(ctx context.Context, partition, email, grantTo, grantType string, grantAttrs map[string]string, ttl time.Duration) (rawToken string, inv *Invitation, err error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return "", nil, errors.New("census: empty email")
@@ -180,7 +180,7 @@ func (s *Service) Invite(ctx context.Context, owner, email, grantTo, grantType s
 	rawToken = s.newToken()
 	now := s.now()
 	inv = &Invitation{
-		Owner:         owner,
+		Partition:         partition,
 		IdentifierEnc: ciphertext,
 		Identifier:    hashHex(email),
 		TokenHash:     hashHex(rawToken),
@@ -231,11 +231,11 @@ func (s *Service) RevokeInvitation(ctx context.Context, id string) error {
 
 // MintAPIKey creates a non-interactive key for a subject with an opaque capability set. The RAW key is
 // returned once (never recoverable from the store, which holds only its hash).
-func (s *Service) MintAPIKey(ctx context.Context, owner, subject, label string, capabilities []string, ttl time.Duration) (rawKey string, key *APIKey, err error) {
+func (s *Service) MintAPIKey(ctx context.Context, partition, subject, label string, capabilities []string, ttl time.Duration) (rawKey string, key *APIKey, err error) {
 	rawKey = s.newKey()
 	now := s.now()
 	key = &APIKey{
-		Owner:        owner,
+		Partition:        partition,
 		Subject:      subject,
 		Label:        label,
 		KeyHash:      hashHex(rawKey),

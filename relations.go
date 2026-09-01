@@ -14,7 +14,7 @@ import (
 // whether automatic). census records these but never interprets the opaque edge type.
 type TransferEvent struct {
 	ID      string
-	Owner   string // opaque owner-scope
+	Partition   string // opaque partition-scope
 	From    string // edge source entity id
 	To      string // edge target entity id
 	Type    string // opaque edge type
@@ -29,19 +29,19 @@ type TransferEvent struct {
 // *sql.DB-backed log (shipped) or the reference MemTransferLog.
 type TransferLog interface {
 	Record(ctx context.Context, e *TransferEvent) error
-	List(ctx context.Context, owner, entity string) ([]*TransferEvent, error)
+	List(ctx context.Context, partition, entity string) ([]*TransferEvent, error)
 }
 
 // ChangeMeta carries the provenance stamped onto a transfer event; all fields are opaque to census.
 type ChangeMeta struct {
-	Owner   string
+	Partition   string
 	Trigger string
 	Source  string
 	Auto    bool
 }
 
 // Guard is a precondition checked before a Revoke commits. It fails the revoke closed when removing the
-// edge would violate a cardinality rule (e.g. dropping an org's last owner). Guards are axis-blind: the
+// edge would violate a cardinality rule (e.g. dropping an org's last partition). Guards are axis-blind: the
 // consumer names the opaque edge type and the minimum, census counts edges without knowing the meaning.
 type Guard func(ctx context.Context, g nexus.GraphStore) error
 
@@ -49,9 +49,9 @@ type Guard func(ctx context.Context, g nexus.GraphStore) error
 var ErrGuardViolation = errors.New("census: relationship guard violation")
 
 // MinIncoming guards that, after a pending revoke of an edge of edgeType into `target`, at least `min`
-// edges of edgeType still point at `target`. This is the axis-blind can't-remove-last-owner primitive:
-// a consumer expresses "an org must keep ≥1 owner" as MinIncoming("owner", orgID, 1) without census
-// knowing what "owner" or an "org" is. It is evaluated against the graph BEFORE the revoke, so a count
+// edges of edgeType still point at `target`. This is the axis-blind can't-remove-last-partition primitive:
+// a consumer expresses "an org must keep ≥1 partition" as MinIncoming("partition", orgID, 1) without census
+// knowing what "partition" or an "org" is. It is evaluated against the graph BEFORE the revoke, so a count
 // of exactly `min` incoming edges blocks removing one of them.
 func MinIncoming(edgeType, target string, min int) Guard {
 	return func(ctx context.Context, g nexus.GraphStore) error {
@@ -135,7 +135,7 @@ func (s *GraphService) Revoke(ctx context.Context, from, to, edgeType string, me
 func (s *GraphService) record(ctx context.Context, from, to, edgeType, change string, meta ChangeMeta) error {
 	return s.log.Record(ctx, &TransferEvent{
 		ID:      s.newID(),
-		Owner:   meta.Owner,
+		Partition:   meta.Partition,
 		From:    from,
 		To:      to,
 		Type:    edgeType,
@@ -157,8 +157,8 @@ func (s *GraphService) Resolve(ctx context.Context, subject string, rules ...nex
 }
 
 // History returns the recorded transfer events touching an entity (as edge source or target).
-func (s *GraphService) History(ctx context.Context, owner, entity string) ([]*TransferEvent, error) {
-	return s.log.List(ctx, owner, entity)
+func (s *GraphService) History(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
+	return s.log.List(ctx, partition, entity)
 }
 
 // OutTargets and Via re-export nexus's rung constructors so a consumer builds precedence ladders

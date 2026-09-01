@@ -10,8 +10,8 @@ import (
 )
 
 // MemStore is the in-memory reference VaultStore — the test/dev backend and the semantic reference a
-// durable (*sql.DB) store must match. Thread-safe; id generator injectable. Owner is opaque; "" on an
-// owner-scoped read means any owner.
+// durable (*sql.DB) store must match. Thread-safe; id generator injectable. Partition is opaque; "" on an
+// partition-scoped read means any partition.
 type MemStore struct {
 	mu            sync.Mutex
 	credentials   map[string]*Credential
@@ -38,7 +38,7 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
-func ownerMatch(want, have string) bool { return want == "" || want == have }
+func partitionMatch(want, have string) bool { return want == "" || want == have }
 
 func fromUnixNano(n int64) time.Time { return time.Unix(0, n).UTC() }
 
@@ -71,12 +71,12 @@ func (m *MemStore) GetCredentialByIdentifier(_ context.Context, kind, identifier
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListCredentialsBySubject(_ context.Context, owner, subject string) ([]*Credential, error) {
+func (m *MemStore) ListCredentialsBySubject(_ context.Context, partition, subject string) ([]*Credential, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*Credential
 	for _, c := range m.credentials {
-		if ownerMatch(owner, c.Owner) && c.Subject == subject {
+		if partitionMatch(partition, c.Partition) && c.Subject == subject {
 			out = append(out, cloneCredential(c))
 		}
 	}
@@ -84,11 +84,11 @@ func (m *MemStore) ListCredentialsBySubject(_ context.Context, owner, subject st
 	return out, nil
 }
 
-func (m *MemStore) DeleteCredential(_ context.Context, owner, id string) error {
+func (m *MemStore) DeleteCredential(_ context.Context, partition, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, ok := m.credentials[id]
-	if !ok || !ownerMatch(owner, c.Owner) {
+	if !ok || !partitionMatch(partition, c.Partition) {
 		return ErrNotFound
 	}
 	delete(m.credentials, id)
@@ -172,12 +172,12 @@ func (m *MemStore) GetPendingInvitation(_ context.Context, identifierHash, grant
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListInvitationsByOwner(_ context.Context, owner, statusFilter string) ([]*Invitation, error) {
+func (m *MemStore) ListInvitationsByPartition(_ context.Context, partition, statusFilter string) ([]*Invitation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*Invitation
 	for _, i := range m.invitations {
-		if ownerMatch(owner, i.Owner) && (statusFilter == "" || i.Status == statusFilter) {
+		if partitionMatch(partition, i.Partition) && (statusFilter == "" || i.Status == statusFilter) {
 			out = append(out, cloneInvitation(i))
 		}
 	}
@@ -223,12 +223,12 @@ func (m *MemStore) GetAPIKeyByHash(_ context.Context, keyHash string) (*APIKey, 
 	return nil, ErrNotFound
 }
 
-func (m *MemStore) ListAPIKeysBySubject(_ context.Context, owner, subject string) ([]*APIKey, error) {
+func (m *MemStore) ListAPIKeysBySubject(_ context.Context, partition, subject string) ([]*APIKey, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []*APIKey
 	for _, k := range m.apiKeys {
-		if ownerMatch(owner, k.Owner) && k.Subject == subject {
+		if partitionMatch(partition, k.Partition) && k.Subject == subject {
 			out = append(out, cloneAPIKey(k))
 		}
 	}
@@ -236,11 +236,11 @@ func (m *MemStore) ListAPIKeysBySubject(_ context.Context, owner, subject string
 	return out, nil
 }
 
-func (m *MemStore) RevokeAPIKey(_ context.Context, owner, id string, revokedAt int64) error {
+func (m *MemStore) RevokeAPIKey(_ context.Context, partition, id string, revokedAt int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.apiKeys[id]
-	if !ok || !ownerMatch(owner, k.Owner) {
+	if !ok || !partitionMatch(partition, k.Partition) {
 		return ErrNotFound
 	}
 	if k.RevokedAt == nil {
@@ -331,14 +331,14 @@ func (l *MemTransferLog) Record(_ context.Context, e *TransferEvent) error {
 	return nil
 }
 
-// List returns every recorded event where the entity is the edge source or target, owner-scoped ("" =
-// any owner).
-func (l *MemTransferLog) List(_ context.Context, owner, entity string) ([]*TransferEvent, error) {
+// List returns every recorded event where the entity is the edge source or target, partition-scoped ("" =
+// any partition).
+func (l *MemTransferLog) List(_ context.Context, partition, entity string) ([]*TransferEvent, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var out []*TransferEvent
 	for _, e := range l.events {
-		if !ownerMatch(owner, e.Owner) {
+		if !partitionMatch(partition, e.Partition) {
 			continue
 		}
 		if e.From == entity || e.To == entity {
