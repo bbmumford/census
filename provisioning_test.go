@@ -18,9 +18,10 @@ func newProvisioner(t *testing.T, assign PartitionAssigner) (*Provisioner, nexus
 		t.Fatalf("NewGraphService: %v", err)
 	}
 	p, err := NewProvisioner(ProvisionerConfig{
-		Graph:  gs,
-		Rules:  []nexus.Rule{OutTargets("member")},
-		Assign: assign,
+		Graph:          gs,
+		Rules:          []nexus.Rule{OutTargets("member")},
+		Assign:         assign,
+		MembershipEdge: "member",
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
@@ -102,9 +103,10 @@ func TestEnsureUser_UnresolvableReturningFailsClosed(t *testing.T) {
 	}
 	// Ladder resolves "owner" edges, but EnsureUser writes a "member" edge.
 	p, err := NewProvisioner(ProvisionerConfig{
-		Graph:  gs,
-		Rules:  []nexus.Rule{OutTargets("owner")},
-		Assign: func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil },
+		Graph:          gs,
+		Rules:          []nexus.Rule{OutTargets("owner")},
+		Assign:         func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil },
+		MembershipEdge: "member",
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
@@ -125,6 +127,25 @@ func TestEnsureUser_IncompleteIdentity(t *testing.T) {
 	}
 }
 
+// MembershipEdge and Rules are correctness-critical: NewProvisioner fails closed
+// on either omission rather than defaulting to an edge that may not match the
+// consumer's other partition resolvers (a silent OAuth-vs-other-login split-brain).
+func TestNewProvisioner_RequiresEdgeAndRules(t *testing.T) {
+	g := nexus.NewMemStore()
+	gs, err := NewGraphService(GraphConfig{Graph: g, Log: NewMemTransferLog()})
+	if err != nil {
+		t.Fatalf("NewGraphService: %v", err)
+	}
+	assign := func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "p", nil }
+
+	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, MembershipEdge: "member"}); err == nil {
+		t.Error("missing Rules should fail closed")
+	}
+	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, Rules: []nexus.Rule{OutTargets("member")}}); err == nil {
+		t.Error("missing MembershipEdge should fail closed")
+	}
+}
+
 // A self-serve assigner mints a fresh partition per first-time subject via
 // MintPartition; the returning login resolves that same partition.
 func TestEnsureUser_SelfServeMintsFreshPartition(t *testing.T) {
@@ -138,9 +159,10 @@ func TestEnsureUser_SelfServeMintsFreshPartition(t *testing.T) {
 		return p.MintPartition(c, "")
 	}
 	p, err = NewProvisioner(ProvisionerConfig{
-		Graph:  gs,
-		Rules:  []nexus.Rule{OutTargets("member")},
-		Assign: assign,
+		Graph:          gs,
+		Rules:          []nexus.Rule{OutTargets("member")},
+		Assign:         assign,
+		MembershipEdge: "member",
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)

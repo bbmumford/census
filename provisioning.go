@@ -49,11 +49,20 @@ type Provisioner struct {
 	membershipEdge string            // subject -[membershipEdge]-> partition
 }
 
-// ProvisionerConfig wires a Provisioner. Graph and Assign are required. Rules is
-// the partition-resolution ladder for returning subjects and MUST include a rung
-// over MembershipEdge (the edge EnsureUser writes at create time), or a returning
-// subject's partition never resolves. UserType/MembershipEdge default to
-// "user"/"member".
+// ProvisionerConfig wires a Provisioner. Graph, Assign, Rules and MembershipEdge
+// are all required.
+//
+// MembershipEdge and Rules are correctness-critical and have NO default on
+// purpose: MembershipEdge is the edge EnsureUser writes at create time, and Rules
+// is the ladder that resolves a returning subject's partition — they MUST agree
+// with each other AND with the edge every OTHER partition writer/resolver in the
+// consumer's graph uses. A silent default here is a split-brain footgun: if
+// EnsureUser wrote membership under one edge while the consumer's other login
+// paths resolve over another, an OAuth-provisioned subject would authenticate but
+// fail to resolve on a later email login. So the consumer states its canonical
+// partition edge explicitly (e.g. its partitiongraph.EdgePartition + ladder) and
+// an omission fails closed rather than diverging. UserType (the subject entity
+// type) is cosmetic and defaults to "user".
 type ProvisionerConfig struct {
 	Graph          *GraphService
 	Rules          []nexus.Rule
@@ -70,6 +79,12 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 	if c.Assign == nil {
 		return nil, &configError{"census: ProvisionerConfig.Assign is required (the onboarding policy)"}
 	}
+	if len(c.Rules) == 0 {
+		return nil, &configError{"census: ProvisionerConfig.Rules is required (the partition-resolution ladder for a returning subject)"}
+	}
+	if c.MembershipEdge == "" {
+		return nil, &configError{"census: ProvisionerConfig.MembershipEdge is required (the edge EnsureUser writes; it MUST match the consumer's canonical partition edge, or a created subject silently fails to resolve on other login paths)"}
+	}
 	p := &Provisioner{
 		graph:          c.Graph,
 		rules:          c.Rules,
@@ -79,9 +94,6 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 	}
 	if p.userType == "" {
 		p.userType = "user"
-	}
-	if p.membershipEdge == "" {
-		p.membershipEdge = "member"
 	}
 	return p, nil
 }
