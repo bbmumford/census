@@ -57,7 +57,7 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 // any partition), in the order recorded.
 func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
 	rows, err := l.db.QueryContext(ctx, `SELECT id, partition, from_id, to_id, type, change, trigger, source,
-		auto, at FROM census_transfers WHERE (? = '' OR partition = ?) AND (from_id = ? OR to_id = ?)
+		auto, at FROM census_transfers WHERE (? <> '' AND partition = ?) AND (from_id = ? OR to_id = ?)
 		ORDER BY seq ASC`, partition, partition, entity, entity)
 	if err != nil {
 		return nil, err

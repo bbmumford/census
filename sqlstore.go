@@ -181,7 +181,7 @@ func (s *SQLVaultStore) GetCredentialByIdentifier(ctx context.Context, kind, ide
 
 func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, partition, subject string) ([]*Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+credentialCols+` FROM census_credentials
-		WHERE (? = '' OR partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
+		WHERE (? <> '' AND partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, partition,
 }
 
 func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM census_credentials WHERE id = ? AND (? = '' OR partition = ?)`,
+	res, err := s.db.ExecContext(ctx, `DELETE FROM census_credentials WHERE id = ? AND (? <> '' AND partition = ?)`,
 		id, partition, partition)
 	if err != nil {
 		return err
@@ -326,7 +326,7 @@ func (s *SQLVaultStore) GetPendingInvitation(ctx context.Context, identifierHash
 
 func (s *SQLVaultStore) ListInvitationsByPartition(ctx context.Context, partition, statusFilter string) ([]*Invitation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+invitationCols+` FROM census_invitations
-		WHERE (? = '' OR partition = ?) AND (? = '' OR status = ?) ORDER BY created_at DESC`,
+		WHERE (? <> '' AND partition = ?) AND (? = '' OR status = ?) ORDER BY created_at DESC`,
 		partition, partition, statusFilter, statusFilter)
 	if err != nil {
 		return nil, err
@@ -405,7 +405,7 @@ func (s *SQLVaultStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*A
 
 func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, partition, subject string) ([]*APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+apiKeyCols+` FROM census_api_keys
-		WHERE (? = '' OR partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
+		WHERE (? <> '' AND partition = ?) AND subject = ? ORDER BY created_at ASC`, partition, partition, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +423,7 @@ func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, partition, sub
 
 func (s *SQLVaultStore) RevokeAPIKey(ctx context.Context, partition, id string, revokedAt int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE census_api_keys SET revoked_at = COALESCE(revoked_at, ?)
-		WHERE id = ? AND (? = '' OR partition = ?)`, revokedAt, id, partition, partition)
+		WHERE id = ? AND (? <> '' AND partition = ?)`, revokedAt, id, partition, partition)
 	if err != nil {
 		return err
 	}

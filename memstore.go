@@ -38,7 +38,16 @@ func randomID() string {
 	return hex.EncodeToString(b)
 }
 
-func partitionMatch(want, have string) bool { return want == "" || want == have }
+// partitionMatch reports whether a row held under partition `have` is visible to a
+// caller asking for partition `want`. Every credential, API-key, invitation and
+// transfer lookup in this store filters through it.
+//
+// An empty `want` names no partition and matches nothing. SQLVaultStore answers
+// the same way — its predicates read (? <> '' AND partition = ?) — and the two
+// have to agree, because a test written against this store is what certifies the
+// other's behaviour. These rows are credentials and keys, so a `want` that matched
+// everything would list and revoke across partitions.
+func partitionMatch(want, have string) bool { return want != "" && want == have }
 
 func fromUnixNano(n int64) time.Time { return time.Unix(0, n).UTC() }
 

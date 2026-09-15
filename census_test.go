@@ -190,3 +190,54 @@ func TestAPIKey_MintVerifyRevoke(t *testing.T) {
 		}
 	})
 }
+
+// TestVaultStore_EmptyPartitionReachesNothing pins the partition boundary on the
+// credential and key store. An empty partition used to drop the partition
+// predicate, so a caller that simply left the field unset listed and revoked
+// across every partition.
+//
+// It compares three outcomes rather than checking each call against what that
+// call expected: the right partition works, a wrong one and an empty one do not,
+// and the empty one must not behave like the right one. A case that only asserts
+// "the call I meant to succeed succeeded" cannot tell a filter that works from one
+// that admits everyone.
+func TestVaultStore_EmptyPartitionReachesNothing(t *testing.T) {
+	eachVault(t, func(t *testing.T, store VaultStore) {
+		now := time.Unix(4_000_000, 0).UTC()
+		s := newServiceWith(t, store)
+		fixedClock(s, now)
+
+		_, key, err := s.MintAPIKey(ctx, "acme", "svc-1", "ci", []string{"deploy"}, time.Hour)
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+
+		mine, err := store.ListAPIKeysBySubject(ctx, "acme", "svc-1")
+		if err != nil || len(mine) != 1 {
+			t.Fatalf("the owning partition must see its key, got %d err=%v", len(mine), err)
+		}
+		blind, err := store.ListAPIKeysBySubject(ctx, "", "svc-1")
+		if err != nil || len(blind) != 0 {
+			t.Fatalf("an empty partition must list no keys, got %d err=%v", len(blind), err)
+		}
+		other, err := store.ListAPIKeysBySubject(ctx, "globex", "svc-1")
+		if err != nil || len(other) != 0 {
+			t.Fatalf("a different partition must list no keys, got %d err=%v", len(other), err)
+		}
+		if len(blind) == len(mine) {
+			t.Fatal("an empty partition saw what the owning partition sees; the predicate admits everyone")
+		}
+
+		// The write half: revoking is the same boundary, and getting it wrong
+		// destroys another partition's credential rather than merely reading it.
+		if err := store.RevokeAPIKey(ctx, "", key.ID, now.UnixNano()); err == nil {
+			still, _ := store.ListAPIKeysBySubject(ctx, "acme", "svc-1")
+			if len(still) == 1 && still[0].RevokedAt != nil {
+				t.Fatal("an empty partition revoked another partition's key")
+			}
+		}
+		if err := store.RevokeAPIKey(ctx, "acme", key.ID, now.UnixNano()); err != nil {
+			t.Fatalf("the owning partition must be able to revoke its own key: %v", err)
+		}
+	})
+}
