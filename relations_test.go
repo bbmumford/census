@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/bbmumford/nexus"
 )
@@ -204,6 +205,61 @@ func TestGraph_EdgeReadsRecordNothing(t *testing.T) {
 		if len(after) != len(before) {
 			t.Fatalf("reads recorded %d transfer event(s); a read changes no relationship",
 				len(after)-len(before))
+		}
+	})
+}
+
+// TestTransferLog_AnUnscopedListReturnsNothing pins the partition scoping of the
+// provenance log itself, on both backends.
+//
+// The credential/key store already has this cover; the transfer log did not, and it
+// is the surface where an over-wide read is worst: this is the record of who granted
+// and revoked what. A predicate admitting an empty partition would let any caller
+// read every partition's grant history, and — in the direction that actually shipped
+// — a reader who believes an empty partition means "everything" gets an EMPTY answer
+// and reads it as "no such events occurred".
+//
+// The legs are asserted to DIFFER rather than only asserting the empty one is empty:
+// a test that checks only the call it expects to succeed cannot tell a real filter
+// from one that admits everyone.
+func TestTransferLog_AnUnscopedListReturnsNothing(t *testing.T) {
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		at := time.Unix(0, 0).UTC()
+		for _, e := range []*TransferEvent{
+			{ID: "ev-1", Partition: "acme", From: "key-1", To: "acme", Type: "partition", Change: "grant", Source: "test", At: at},
+			{ID: "ev-2", Partition: "globex", From: "key-1", To: "globex", Type: "partition", Change: "grant", Source: "test", At: at},
+		} {
+			if err := log.Record(ctx, e); err != nil {
+				t.Fatalf("Record(%s): %v", e.ID, err)
+			}
+		}
+
+		scoped, err := log.List(ctx, "acme", "key-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(scoped) != 1 || scoped[0].Partition != "acme" {
+			t.Fatalf("List(acme) = %+v, want only acme's event", scoped)
+		}
+
+		other, err := log.List(ctx, "globex", "key-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(other) != 1 || other[0].Partition != "globex" {
+			t.Fatalf("List(globex) = %+v, want only globex's event", other)
+		}
+
+		blind, err := log.List(ctx, "", "key-1")
+		if err != nil {
+			t.Fatalf("an unscoped list must answer emptily, not error: %v", err)
+		}
+		if len(blind) != 0 {
+			t.Fatalf("an unscoped list returned %d event(s); the predicate admits every partition's "+
+				"grant history", len(blind))
+		}
+		if len(blind) == len(scoped)+len(other) {
+			t.Fatal("the unscoped list saw the union of both partitions")
 		}
 	})
 }

@@ -7,7 +7,7 @@ import (
 
 // SQLTransferLog is the durable default TransferLog over any database/sql driver — the shipped
 // append-only sink for relationship-change provenance. Like SQLVaultStore it imports only stdlib
-// database/sql; the app supplies the driver + *sql.DB. Partition is opaque; "" on List matches any partition.
+// database/sql; the app supplies the driver + *sql.DB. Partition is opaque; "" on List matches nothing.
 type SQLTransferLog struct{ db *sql.DB }
 
 // NewSQLTransferLog builds a log over an opened *sql.DB. Call InitSchema once before use.
@@ -53,8 +53,10 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 	return err
 }
 
-// List returns every recorded event where the entity is the edge source or target, partition-scoped ("" =
-// any partition), in the order recorded.
+// List returns every recorded event where the entity is the edge source or target, scoped to one
+// partition, in the order recorded. An empty partition matches nothing: the predicate reads
+// (? <> '' AND partition = ?), so an unscoped call returns no events rather than every partition's
+// provenance — an audit read that names no partition comes back empty, it does not come back complete.
 func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
 	rows, err := l.db.QueryContext(ctx, `SELECT id, partition, from_id, to_id, type, change, trigger, source,
 		auto, at FROM census_transfers WHERE (? <> '' AND partition = ?) AND (from_id = ? OR to_id = ?)

@@ -10,8 +10,8 @@ import (
 )
 
 // MemStore is the in-memory reference VaultStore — the test/dev backend and the semantic reference a
-// durable (*sql.DB) store must match. Thread-safe; id generator injectable. Partition is opaque; "" on an
-// partition-scoped read means any partition.
+// durable (*sql.DB) store must match. Thread-safe; id generator injectable. Partition is opaque; "" on a
+// partition-scoped read matches nothing — see partitionMatch, which both backends are held to.
 type MemStore struct {
 	mu            sync.Mutex
 	credentials   map[string]*Credential
@@ -340,8 +340,9 @@ func (l *MemTransferLog) Record(_ context.Context, e *TransferEvent) error {
 	return nil
 }
 
-// List returns every recorded event where the entity is the edge source or target, partition-scoped ("" =
-// any partition).
+// List returns every recorded event where the entity is the edge source or target, scoped to one
+// partition. An empty partition matches nothing (partitionMatch), so an unscoped call returns no events
+// rather than every partition's provenance.
 func (l *MemTransferLog) List(_ context.Context, partition, entity string) ([]*TransferEvent, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
