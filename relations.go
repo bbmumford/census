@@ -156,6 +156,27 @@ func (s *GraphService) Resolve(ctx context.Context, subject string, rules ...nex
 	return nexus.Resolve(ctx, s.graph, subject, rules...)
 }
 
+// OutEdges returns the edges leading out of an entity, narrowed to the given types. InEdges returns
+// the edges leading in to one — the direction that answers "which subjects belong to this partition"
+// where OutEdges answers "which partition does this subject belong to".
+//
+// They are on the service, rather than left to a consumer holding the store, because the store is not
+// a read-only handle: nexus.GraphStore also carries PutRelationship and DeleteRelationship, so passing
+// it to an endpoint that only wants to list members would also let that endpoint grant and remove
+// memberships without recording a thing. NewGraphService refuses a nil TransferLog precisely so every
+// relationship change is recorded, and an edge written through the store directly appears in no
+// History. Reading through the service keeps the one handle a consumer holds the audited one.
+//
+// Both are passthroughs and record nothing, on the same footing as Resolve: a read changes no
+// relationship, so there is no transfer event to write.
+func (s *GraphService) OutEdges(ctx context.Context, from string, types ...string) ([]nexus.Relationship, error) {
+	return s.graph.OutEdges(ctx, from, types...)
+}
+
+func (s *GraphService) InEdges(ctx context.Context, to string, types ...string) ([]nexus.Relationship, error) {
+	return s.graph.InEdges(ctx, to, types...)
+}
+
 // History returns the recorded transfer events touching an entity (as edge source or target).
 func (s *GraphService) History(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
 	return s.log.List(ctx, partition, entity)

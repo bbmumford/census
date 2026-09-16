@@ -1,6 +1,7 @@
 package census
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -102,4 +103,107 @@ func TestGraph_ResolveIsGeneral(t *testing.T) {
 	if !direct.Resolved || direct.Value != "project-y" {
 		t.Fatalf("a direct rung must win over a transitive one; got %+v", direct)
 	}
+}
+
+// The service is the handle a consumer holds, so it must answer the edge reads
+// itself. A consumer that had to reach for the store to read would also acquire
+// PutRelationship and DeleteRelationship, and could write memberships that
+// appear in no History.
+var (
+	_ interface {
+		OutEdges(ctx context.Context, from string, types ...string) ([]nexus.Relationship, error)
+	} = (*GraphService)(nil)
+	_ interface {
+		InEdges(ctx context.Context, to string, types ...string) ([]nexus.Relationship, error)
+	} = (*GraphService)(nil)
+)
+
+func TestGraph_EdgeReadsAnswerBothDirections(t *testing.T) {
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		s, _ := newGraphServiceWith(t, log)
+		meta := ChangeMeta{Partition: "acme", Source: "test"}
+		for _, subject := range []string{"key-1", "device-7"} {
+			if err := s.Grant(ctx, subject, "acme", "partition", nil, meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Outward: which partition does this subject belong to.
+		out, err := s.OutEdges(ctx, "key-1", "partition")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 1 || out[0].To != "acme" {
+			t.Fatalf("OutEdges(key-1) = %+v, want one edge to acme", out)
+		}
+
+		// Inward: which subjects belong to this partition. This direction has no
+		// other answer on the service, and it is the one a member listing needs.
+		in, err := s.InEdges(ctx, "acme", "partition")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(in) != 2 {
+			t.Fatalf("InEdges(acme) = %+v, want both members", in)
+		}
+		seen := map[string]bool{}
+		for _, e := range in {
+			seen[e.From] = true
+			if e.From == "acme" {
+				t.Fatal("the partition was returned as its own member: the read took the wrong end")
+			}
+		}
+		if !seen["key-1"] || !seen["device-7"] {
+			t.Fatalf("InEdges(acme) missed a member: %+v", in)
+		}
+	})
+}
+
+func TestGraph_EdgeReadsNarrowByType(t *testing.T) {
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		s, _ := newGraphServiceWith(t, log)
+		meta := ChangeMeta{Partition: "acme", Source: "test"}
+		if err := s.Grant(ctx, "key-1", "acme", "partition", nil, meta); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Grant(ctx, "audit-3", "acme", "audit", nil, meta); err != nil {
+			t.Fatal(err)
+		}
+
+		in, err := s.InEdges(ctx, "acme", "partition")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(in) != 1 || in[0].From != "key-1" {
+			t.Fatalf("InEdges(acme, partition) = %+v, want only the partition edge — an unnarrowed "+
+				"read lists every entity that points at the partition as one of its members", in)
+		}
+	})
+}
+
+// TestGraph_EdgeReadsRecordNothing pins that a read is not a transition. Routing
+// these through record would put an event in History for every listing, and a
+// consumer reading History to audit who was granted what would find entries no
+// grant produced.
+func TestGraph_EdgeReadsRecordNothing(t *testing.T) {
+	eachLog(t, func(t *testing.T, log TransferLog) {
+		s, _ := newGraphServiceWith(t, log)
+		if err := s.Grant(ctx, "key-1", "acme", "partition", nil, ChangeMeta{Partition: "acme", Source: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := s.History(ctx, "acme", "acme")
+
+		if _, err := s.OutEdges(ctx, "key-1", "partition"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.InEdges(ctx, "acme", "partition"); err != nil {
+			t.Fatal(err)
+		}
+
+		after, _ := s.History(ctx, "acme", "acme")
+		if len(after) != len(before) {
+			t.Fatalf("reads recorded %d transfer event(s); a read changes no relationship",
+				len(after)-len(before))
+		}
+	})
 }
