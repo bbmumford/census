@@ -43,28 +43,22 @@ type ChangeMeta struct {
 // Guard is a precondition checked before a Revoke commits. It fails the revoke closed when removing the
 // edge would violate a cardinality rule (e.g. dropping an org's last partition). Guards are axis-blind: the
 // consumer names the opaque edge type and the minimum, census counts edges without knowing the meaning.
+// Guard is a pre-condition evaluated against the graph before a Revoke.
+//
+// ⚠ A Guard reads the graph and returns; it does not hold across the delete that
+// follows. So it can express a condition that is true independently of this revoke —
+// and it CANNOT express one that the revoke itself changes, because two callers both
+// pass a count-based Guard and both proceed. For a cardinality floor use
+// RevokeKeepingMin, which enforces the count in the same operation as the delete.
 type Guard func(ctx context.Context, g nexus.GraphStore) error
 
-// ErrGuardViolation is returned when a Revoke would violate a Guard (a cardinality floor).
+// ErrGuardViolation is returned when a Revoke would violate a Guard.
 var ErrGuardViolation = errors.New("census: relationship guard violation")
 
-// MinIncoming guards that, after a pending revoke of an edge of edgeType into `target`, at least `min`
-// edges of edgeType still point at `target`. This is the axis-blind can't-remove-last-partition primitive:
-// a consumer expresses "an org must keep ≥1 partition" as MinIncoming("partition", orgID, 1) without census
-// knowing what "partition" or an "org" is. It is evaluated against the graph BEFORE the revoke, so a count
-// of exactly `min` incoming edges blocks removing one of them.
-func MinIncoming(edgeType, target string, min int) Guard {
-	return func(ctx context.Context, g nexus.GraphStore) error {
-		edges, err := g.InEdges(ctx, target, edgeType)
-		if err != nil {
-			return err
-		}
-		if len(edges) <= min {
-			return ErrGuardViolation
-		}
-		return nil
-	}
-}
+// ErrCardinalityFloor is returned by RevokeKeepingMin when the revoke would leave
+// fewer edges pointing at the target than the caller required. It wraps nexus's own
+// sentinel, so a caller may match either.
+var ErrCardinalityFloor = nexus.ErrCardinalityFloor
 
 // GraphService is the account-relationship façade over a nexus graph: it grants and revokes opaque
 // typed edges, records every change to an append-only TransferLog (§ recorded transitions), enforces
@@ -127,6 +121,28 @@ func (s *GraphService) Revoke(ctx context.Context, from, to, edgeType string, me
 		}
 	}
 	if err := s.graph.DeleteRelationship(ctx, from, to, edgeType); err != nil {
+		return err
+	}
+	return s.record(ctx, from, to, edgeType, "revoke", meta)
+}
+
+// RevokeKeepingMin removes an edge only while more than `min` edges of edgeType point
+// at `to`, and returns ErrCardinalityFloor otherwise. It is the axis-blind
+// cannot-remove-the-last-one primitive: a consumer expresses "this target keeps at
+// least one member" as RevokeKeepingMin(..., 1) without census knowing what a member
+// or a target is.
+//
+// The floor is enforced by the STORE, in one operation with the delete, because a
+// count taken before a separate delete is not a floor: two callers each read a safe
+// total, each proceed, and the last edge both were protecting is removed. A Guard
+// cannot express this — it runs before the write and cannot hold across it — so the
+// cardinality case is a method rather than a Guard, and Guard is left for checks that
+// do not have to survive the write.
+//
+// The transfer event is recorded only after the delete commits, so the log names
+// removals that happened rather than removals that were attempted.
+func (s *GraphService) RevokeKeepingMin(ctx context.Context, from, to, edgeType string, min int, meta ChangeMeta) error {
+	if err := s.graph.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min); err != nil {
 		return err
 	}
 	return s.record(ctx, from, to, edgeType, "revoke", meta)

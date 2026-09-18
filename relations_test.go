@@ -54,19 +54,19 @@ func TestGraph_GrantRevokeRecordsProvenance(t *testing.T) {
 	})
 }
 
-func TestGraph_MinIncomingGuardBlocksLastEdge(t *testing.T) {
+func TestGraph_CardinalityFloorBlocksLastEdge(t *testing.T) {
 	eachLog(t, func(t *testing.T, log TransferLog) {
 		s, g := newGraphServiceWith(t, log)
 		m := ChangeMeta{Partition: "acme"}
 		s.Grant(ctx, "user-1", "org-9", "partition", nil, m)
 		s.Grant(ctx, "user-2", "org-9", "partition", nil, m)
-		// two owners: removing one is allowed (guard requires ≥1 remaining)
-		if err := s.Revoke(ctx, "user-1", "org-9", "partition", m, MinIncoming("partition", "org-9", 1)); err != nil {
+		// two holders: removing one is allowed (the floor requires ≥1 remaining)
+		if err := s.RevokeKeepingMin(ctx, "user-1", "org-9", "partition", 1, m); err != nil {
 			t.Fatalf("removing one of two owners must be allowed; got %v", err)
 		}
-		// one partition left: the guard blocks removing the last, and leaves the edge intact
-		if err := s.Revoke(ctx, "user-2", "org-9", "partition", m, MinIncoming("partition", "org-9", 1)); !errors.Is(err, ErrGuardViolation) {
-			t.Fatalf("removing the last partition must be ErrGuardViolation; got %v", err)
+		// one left: the floor blocks removing the last, and leaves the edge intact
+		if err := s.RevokeKeepingMin(ctx, "user-2", "org-9", "partition", 1, m); !errors.Is(err, ErrCardinalityFloor) {
+			t.Fatalf("removing the last partition must be ErrCardinalityFloor; got %v", err)
 		}
 		if ok, _ := g.HasRelationship(ctx, "user-2", "org-9", "partition"); !ok {
 			t.Fatal("a blocked revoke must leave the edge intact (fail-closed)")
