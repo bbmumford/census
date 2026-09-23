@@ -8,6 +8,11 @@ import (
 	"github.com/bbmumford/nexus"
 )
 
+// testMembershipAttrs stands in for the attributes a consumer's membership
+// readers admit a member by. Its key and value mean nothing to census, which is
+// the property the tests below hold: census writes what it was configured with.
+var testMembershipAttrs = map[string]string{"subject_kind": "probe_kind"}
+
 // newProvisioner builds a Provisioner over an in-memory graph whose ladder resolves
 // the "member" membership edge EnsureUser writes.
 func newProvisioner(t *testing.T, assign PartitionAssigner) (*Provisioner, nexus.GraphStore) {
@@ -18,10 +23,11 @@ func newProvisioner(t *testing.T, assign PartitionAssigner) (*Provisioner, nexus
 		t.Fatalf("NewGraphService: %v", err)
 	}
 	p, err := NewProvisioner(ProvisionerConfig{
-		Graph:          gs,
-		Rules:          []nexus.Rule{OutTargets("member")},
-		Assign:         assign,
-		MembershipEdge: "member",
+		Graph:           gs,
+		Rules:           []nexus.Rule{OutTargets("member")},
+		Assign:          assign,
+		MembershipEdge:  "member",
+		MembershipAttrs: testMembershipAttrs,
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
@@ -103,10 +109,11 @@ func TestEnsureUser_UnresolvableReturningFailsClosed(t *testing.T) {
 	}
 	// Ladder resolves "owner" edges, but EnsureUser writes a "member" edge.
 	p, err := NewProvisioner(ProvisionerConfig{
-		Graph:          gs,
-		Rules:          []nexus.Rule{OutTargets("owner")},
-		Assign:         func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil },
-		MembershipEdge: "member",
+		Graph:           gs,
+		Rules:           []nexus.Rule{OutTargets("owner")},
+		Assign:          func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil },
+		MembershipEdge:  "member",
+		MembershipAttrs: testMembershipAttrs,
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)
@@ -138,11 +145,105 @@ func TestNewProvisioner_RequiresEdgeAndRules(t *testing.T) {
 	}
 	assign := func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "p", nil }
 
-	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, MembershipEdge: "member"}); err == nil {
+	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, MembershipEdge: "member", MembershipAttrs: testMembershipAttrs}); err == nil {
 		t.Error("missing Rules should fail closed")
 	}
-	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, Rules: []nexus.Rule{OutTargets("member")}}); err == nil {
+	if _, err := NewProvisioner(ProvisionerConfig{Graph: gs, Assign: assign, Rules: []nexus.Rule{OutTargets("member")}, MembershipAttrs: testMembershipAttrs}); err == nil {
 		t.Error("missing MembershipEdge should fail closed")
+	}
+}
+
+// TestNewProvisioner_RequiresMembershipAttrs holds the membership attributes to
+// the same rule as the edge: a consumer whose readers admit a member by an
+// attribute census does not interpret gets a construction error, not subjects
+// those readers deny.
+func TestNewProvisioner_RequiresMembershipAttrs(t *testing.T) {
+	g := nexus.NewMemStore()
+	gs, err := NewGraphService(GraphConfig{Graph: g, Log: NewMemTransferLog()})
+	if err != nil {
+		t.Fatalf("NewGraphService: %v", err)
+	}
+	assign := func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "p", nil }
+	for name, attrs := range map[string]map[string]string{"nil": nil, "empty": {}} {
+		_, err := NewProvisioner(ProvisionerConfig{
+			Graph:           gs,
+			Rules:           []nexus.Rule{OutTargets("member")},
+			Assign:          assign,
+			MembershipEdge:  "member",
+			MembershipAttrs: attrs,
+		})
+		if err == nil {
+			t.Errorf("%s MembershipAttrs should fail closed", name)
+		}
+	}
+}
+
+// TestEnsureUser_WritesTheConfiguredMembershipAttrs holds that a first-time
+// subject's membership edge carries exactly the configured attributes, that a
+// change to the caller's map after construction does not reach a later edge, and
+// that a returning subject's edge is not rewritten.
+func TestEnsureUser_WritesTheConfiguredMembershipAttrs(t *testing.T) {
+	g := nexus.NewMemStore()
+	gs, err := NewGraphService(GraphConfig{Graph: g, Log: NewMemTransferLog()})
+	if err != nil {
+		t.Fatalf("NewGraphService: %v", err)
+	}
+	configured := map[string]string{"subject_kind": "probe_kind", "origin": "probe"}
+	p, err := NewProvisioner(ProvisionerConfig{
+		Graph:           gs,
+		Rules:           []nexus.Rule{OutTargets("member")},
+		Assign:          func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil },
+		MembershipEdge:  "member",
+		MembershipAttrs: configured,
+	})
+	if err != nil {
+		t.Fatalf("NewProvisioner: %v", err)
+	}
+	configured["subject_kind"] = "changed_after_construction"
+	configured["late"] = "x"
+
+	membership := func(subject string) nexus.Relationship {
+		t.Helper()
+		edges, err := g.OutEdges(ctx, subject, "member")
+		if err != nil {
+			t.Fatalf("OutEdges: %v", err)
+		}
+		if len(edges) != 1 {
+			t.Fatalf("subject %q holds %d membership edges, want 1: %+v", subject, len(edges), edges)
+		}
+		return edges[0]
+	}
+	want := map[string]string{"subject_kind": "probe_kind", "origin": "probe"}
+
+	id := ProviderIdentity{Provider: "google", ProviderUserID: "sub-attrs"}
+	sub, _, err := p.EnsureUser(ctx, id, "")
+	if err != nil {
+		t.Fatalf("EnsureUser: %v", err)
+	}
+	edge := membership(sub)
+	if len(edge.Attrs) != len(want) {
+		t.Fatalf("membership attrs = %v, want %v", edge.Attrs, want)
+	}
+	for k, v := range want {
+		if edge.Attrs[k] != v {
+			t.Fatalf("membership attrs = %v, want %v", edge.Attrs, want)
+		}
+	}
+
+	history, err := gs.History(ctx, "part-1", sub)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	before := len(history)
+	if _, _, err := p.EnsureUser(ctx, id, ""); err != nil {
+		t.Fatalf("returning EnsureUser: %v", err)
+	}
+	history, err = gs.History(ctx, "part-1", sub)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(history) != before {
+		t.Fatalf("a returning subject recorded %d further grants, want 0", len(history)-before)
 	}
 }
 
@@ -159,10 +260,11 @@ func TestEnsureUser_SelfServeMintsFreshPartition(t *testing.T) {
 		return p.MintPartition(c, "")
 	}
 	p, err = NewProvisioner(ProvisionerConfig{
-		Graph:          gs,
-		Rules:          []nexus.Rule{OutTargets("member")},
-		Assign:         assign,
-		MembershipEdge: "member",
+		Graph:           gs,
+		Rules:           []nexus.Rule{OutTargets("member")},
+		Assign:          assign,
+		MembershipEdge:  "member",
+		MembershipAttrs: testMembershipAttrs,
 	})
 	if err != nil {
 		t.Fatalf("NewProvisioner: %v", err)

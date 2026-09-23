@@ -47,10 +47,13 @@ type Provisioner struct {
 	assign         PartitionAssigner // onboarding policy for first-time subjects
 	userType       string            // entity type minted for a subject
 	membershipEdge string            // subject -[membershipEdge]-> partition
+	// membershipAttrs are the attributes the membership edge is written with,
+	// held as this Provisioner's own copy (see ProvisionerConfig.MembershipAttrs).
+	membershipAttrs map[string]string
 }
 
-// ProvisionerConfig wires a Provisioner. Graph, Assign, Rules and MembershipEdge
-// are all required.
+// ProvisionerConfig wires a Provisioner. Graph, Assign, Rules, MembershipEdge and
+// MembershipAttrs are all required.
 //
 // MembershipEdge and Rules are correctness-critical and have NO default on
 // purpose: MembershipEdge is the edge EnsureUser writes at create time, and Rules
@@ -63,12 +66,24 @@ type Provisioner struct {
 // partition edge explicitly (e.g. its partitiongraph.EdgePartition + ladder) and
 // an omission fails closed rather than diverging. UserType (the subject entity
 // type) is cosmetic and defaults to "user".
+//
+// MembershipAttrs are the attributes EnsureUser writes on the membership edge of
+// a subject it creates. They are required and have no default for the same
+// reason as MembershipEdge: the consumer's membership readers decide whether the
+// edge admits anyone from attributes census does not interpret — a consumer that
+// admits a member through a resolver keyed on a subject-kind attribute denies
+// every edge written without one — so the consumer states the attributes its
+// readers need, and an empty set fails closed rather than writing members those
+// readers refuse. NewProvisioner copies the map, so a change to it after
+// construction does not reach later edges, and each edge is written with its
+// own copy.
 type ProvisionerConfig struct {
-	Graph          *GraphService
-	Rules          []nexus.Rule
-	Assign         PartitionAssigner
-	UserType       string
-	MembershipEdge string
+	Graph           *GraphService
+	Rules           []nexus.Rule
+	Assign          PartitionAssigner
+	UserType        string
+	MembershipEdge  string
+	MembershipAttrs map[string]string
 }
 
 // NewProvisioner validates the config and returns the provisioner.
@@ -85,12 +100,16 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 	if c.MembershipEdge == "" {
 		return nil, &configError{"census: ProvisionerConfig.MembershipEdge is required (the edge EnsureUser writes; it MUST match the consumer's canonical partition edge, or a created subject silently fails to resolve on other login paths)"}
 	}
+	if len(c.MembershipAttrs) == 0 {
+		return nil, &configError{"census: ProvisionerConfig.MembershipAttrs is required (the attributes the consumer's membership readers admit a member by; an edge written without them is a member those readers deny)"}
+	}
 	p := &Provisioner{
-		graph:          c.Graph,
-		rules:          c.Rules,
-		assign:         c.Assign,
-		userType:       c.UserType,
-		membershipEdge: c.MembershipEdge,
+		graph:           c.Graph,
+		rules:           c.Rules,
+		assign:          c.Assign,
+		userType:        c.UserType,
+		membershipEdge:  c.MembershipEdge,
+		membershipAttrs: copyAttrs(c.MembershipAttrs),
 	}
 	if p.userType == "" {
 		p.userType = "user"
@@ -151,10 +170,23 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 	if err := p.graph.Grant(ctx, subject, identity.ProviderUserID, idEdge, nil, meta); err != nil {
 		return "", "", fmt.Errorf("census: grant identity edge: %w", err)
 	}
-	if err := p.graph.Grant(ctx, subject, partition, p.membershipEdge, nil, meta); err != nil {
+	if err := p.graph.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
 		return "", "", fmt.Errorf("census: grant membership: %w", err)
 	}
 	return subject, partition, nil
+}
+
+// copyAttrs returns an independent copy of attrs. NewProvisioner keeps its own
+// copy of the configured membership attributes, and EnsureUser hands each edge a
+// further copy, because the graph store may keep the map it is given: an edge
+// sharing one map with the configuration, or with another edge, would change
+// when either of those did.
+func copyAttrs(attrs map[string]string) map[string]string {
+	out := make(map[string]string, len(attrs))
+	for k, v := range attrs {
+		out[k] = v
+	}
+	return out
 }
 
 // resolvePartition resolves a returning subject's partition through the ladder,
