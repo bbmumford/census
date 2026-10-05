@@ -18,6 +18,7 @@ type MemStore struct {
 	verifications map[string]*EmailVerification
 	invitations   map[string]*Invitation
 	apiKeys       map[string]*APIKey
+	spentSteps    map[spentStep]spentRecord
 	newID         func() string
 }
 
@@ -28,6 +29,7 @@ func NewMemStore() *MemStore {
 		verifications: map[string]*EmailVerification{},
 		invitations:   map[string]*Invitation{},
 		apiKeys:       map[string]*APIKey{},
+		spentSteps:    map[spentStep]spentRecord{},
 		newID:         randomID,
 	}
 }
@@ -101,6 +103,51 @@ func (m *MemStore) DeleteCredential(_ context.Context, partition, id string) err
 		return ErrNotFound
 	}
 	delete(m.credentials, id)
+	return nil
+}
+
+// ── Second-factor spent steps ──
+
+// spentStep is the key SpendStep is first on exactly once. It holds no partition
+// because a code valid for a subject is spendable once however many partitions'
+// requests present it; the partition a step was spent under is the value's
+// companion in spentPartition.
+type spentStep struct {
+	subject string
+	step    int64
+}
+
+// spentRecord is what a spent step holds: the partition it was spent under, so
+// DeleteSpentSteps can clear a subject's rows under the store's partition rule,
+// and when.
+type spentRecord struct {
+	partition string
+	at        int64
+}
+
+func (m *MemStore) SpendStep(_ context.Context, partition, subject string, step, spentAt int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// The lock spans the read and the write, which is what the seam requires:
+	// two requests presenting one stolen code arrive together, and a
+	// read-then-write outside the lock would answer first to both.
+	k := spentStep{subject: subject, step: step}
+	if _, seen := m.spentSteps[k]; seen {
+		return false, nil
+	}
+	m.spentSteps[k] = spentRecord{partition: partition, at: spentAt}
+	return true, nil
+}
+
+func (m *MemStore) DeleteSpentSteps(_ context.Context, partition, subject string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, rec := range m.spentSteps {
+		if k.subject != subject || !partitionMatch(partition, rec.partition) {
+			continue
+		}
+		delete(m.spentSteps, k)
+	}
 	return nil
 }
 

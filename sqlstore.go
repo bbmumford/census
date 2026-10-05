@@ -50,6 +50,14 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_invite_token ON census_invitations(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_invite_pending ON census_invitations(identifier, grant_to, status)`,
+		// A step is spent once per subject, whatever partition's request presents the code, so the key
+		// is (subject, step) and partition is carried for the scoped clear DeleteSpentSteps performs.
+		`CREATE TABLE IF NOT EXISTS census_spent_steps (
+			subject TEXT NOT NULL DEFAULT '', step INTEGER NOT NULL DEFAULT 0,
+			partition TEXT NOT NULL DEFAULT '', spent_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (subject, step)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_census_spent_subject ON census_spent_steps(partition, subject)`,
 		`CREATE TABLE IF NOT EXISTS census_api_keys (
 			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
 			label TEXT NOT NULL DEFAULT '', key_hash TEXT NOT NULL DEFAULT '',

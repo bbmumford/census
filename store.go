@@ -43,6 +43,18 @@ type VaultStore interface {
 	ListInvitationsByPartition(ctx context.Context, partition, statusFilter string) ([]*Invitation, error)
 	UpdateInvitationStatus(ctx context.Context, id, status string, at int64) error
 
+	// ── Second-factor spent steps ──
+	// SpendStep records that a subject has spent one time step and reports whether this call is the
+	// first to record it. It MUST be atomic against a concurrent call for the same (subject, step):
+	// two requests arriving together with one stolen code is the case it exists for, so a
+	// read-then-write admits exactly that. The key is (subject, step) and not (partition, subject,
+	// step), because a code valid for a subject is spendable once however many partitions' requests
+	// present it; partition is carried so DeleteSpentSteps can clear a subject's rows.
+	SpendStep(ctx context.Context, partition, subject string, step, spentAt int64) (first bool, err error)
+	// DeleteSpentSteps drops every step a subject has spent, so a replacement secret is not refused
+	// for the window its predecessor already spent.
+	DeleteSpentSteps(ctx context.Context, partition, subject string) error
+
 	// ── API keys ──
 	PutAPIKey(ctx context.Context, k *APIKey) error
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
