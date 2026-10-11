@@ -75,7 +75,10 @@ func backupIdentifier(subject string, position int) string {
 //   - a subject already holding a factor has it replaced in place, re-putting
 //     the row totpIdentifier names;
 //   - the subject's spent steps go with the replacement, because SpendTOTPStep
-//     keys on (subject, step) and not on the secret.
+//     keys on (subject, step) and not on the secret. The clear runs for the
+//     partition the replaced row carried as well as for this one: totpIdentifier
+//     holds no partition, so the row this re-put reaches may have been written
+//     under another, and DeleteSpentSteps matches only the partition it is given.
 func (s *Service) EnrolTOTP(ctx context.Context, partition, subject, secret string) (*Credential, error) {
 	if partition == "" {
 		return nil, ErrUnscoped
@@ -98,16 +101,23 @@ func (s *Service) EnrolTOTP(ctx context.Context, partition, subject, secret stri
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	replaced := ""
 	if existing, err := s.store.GetCredentialByIdentifier(ctx, KindTOTP, identifier); err == nil {
-		c.ID, c.CreatedAt = existing.ID, existing.CreatedAt
+		c.ID, c.CreatedAt, replaced = existing.ID, existing.CreatedAt, existing.Partition
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	if err := s.store.PutCredential(ctx, c); err != nil {
 		return nil, err
 	}
-	if err := s.store.DeleteSpentSteps(ctx, partition, subject); err != nil {
-		return nil, err
+	scopes := []string{partition}
+	if replaced != "" && replaced != partition {
+		scopes = append(scopes, replaced)
+	}
+	for _, p := range scopes {
+		if err := s.store.DeleteSpentSteps(ctx, p, subject); err != nil {
+			return nil, err
+		}
 	}
 	return c, nil
 }
@@ -171,6 +181,12 @@ func (s *Service) SpendTOTPStep(ctx context.Context, subject string, step int64)
 // (subject, step), so a step spent under the removed secret would refuse a
 // correct code from the next enrolment until the window passed. A subject with
 // no factor is not an error — the end state the caller asked for already holds.
+//
+// A FACTOR HELD UNDER ANOTHER PARTITION IS ErrNotFound AND NOT NIL. totpIdentifier
+// carries no partition, so the lookup reaches the row whatever partition wrote it,
+// while DeleteCredential matches the partition it is given; swallowing that miss
+// would answer nil to a caller whose factor is still enrolled, still read by
+// TOTPSecret — which is partition-free — and still required at every login.
 func (s *Service) DeleteTOTP(ctx context.Context, partition, subject string) error {
 	if partition == "" {
 		return ErrUnscoped
@@ -180,6 +196,12 @@ func (s *Service) DeleteTOTP(ctx context.Context, partition, subject string) err
 		return err
 	}
 	if c != nil {
+		// Tested on the row rather than on DeleteCredential's ErrNotFound, which
+		// also answers the race where a concurrent caller removed the row first:
+		// there the end state the caller asked for does hold, and here it does not.
+		if c.Partition != partition {
+			return ErrNotFound
+		}
 		if err := s.store.DeleteCredential(ctx, partition, c.ID); err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}

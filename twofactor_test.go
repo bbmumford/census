@@ -186,3 +186,75 @@ func TestBackupCodes_AcceptedOnceAndReplaced(t *testing.T) {
 		}
 	})
 }
+
+// A subject's one factor is reached by a lookup that carries no partition, while
+// the writes that clear it carry one. A replacement written under a second
+// partition therefore has to clear the steps the row it replaces spent, or a
+// correct code from the new secret is refused as a replay for the rest of the
+// window the old one spent.
+func TestTOTP_AReplacementUnderASecondPartitionClearsTheStepsTheOldRowSpent(t *testing.T) {
+	eachVault(t, func(t *testing.T, store VaultStore) {
+		s := newServiceWith(t, store)
+		if _, err := s.EnrolTOTP(ctx, "part_1", "usr_1", "JBSWY3DPEHPK3PXP"); err != nil {
+			t.Fatal(err)
+		}
+		if first, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil || !first {
+			t.Fatalf("the first spend under part_1 = %v, %v; want true, nil", first, err)
+		}
+		if _, err := s.EnrolTOTP(ctx, "part_2", "usr_1", "NEWSECRET234567A"); err != nil {
+			t.Fatalf("re-enrol under a second partition: %v", err)
+		}
+		if first, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil || !first {
+			t.Fatalf("the replacement's own first spend of that step = %v, %v; want true, nil", first, err)
+		}
+		// The same clear still holds when both enrolments name one partition, which
+		// is the ordinary path: the second call must not leave the first's steps.
+		if _, err := s.EnrolTOTP(ctx, "part_2", "usr_2", "JBSWY3DPEHPK3PXP"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SpendTOTPStep(ctx, "usr_2", 58000000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.EnrolTOTP(ctx, "part_2", "usr_2", "NEWSECRET234567A"); err != nil {
+			t.Fatal(err)
+		}
+		if first, err := s.SpendTOTPStep(ctx, "usr_2", 58000000); err != nil || !first {
+			t.Fatalf("one partition, replaced in place, the step = %v, %v; want true, nil", first, err)
+		}
+	})
+}
+
+// A removal that reaches a factor held under another partition cannot report the
+// removal it did not perform: TOTPSecret carries no partition, so the factor it
+// leaves behind is still read and still required at every login.
+func TestTOTP_ARemovalFromAnotherPartitionIsRefusedAndNotReportedDone(t *testing.T) {
+	eachVault(t, func(t *testing.T, store VaultStore) {
+		s := newServiceWith(t, store)
+		if _, err := s.EnrolTOTP(ctx, "part_1", "usr_1", "JBSWY3DPEHPK3PXP"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteTOTP(ctx, "part_2", "usr_1"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("DeleteTOTP from a partition that does not hold the factor = %v; want ErrNotFound", err)
+		}
+		if _, found, _ := s.TOTPSecret(ctx, "usr_1"); !found {
+			t.Fatal("the refused removal removed the factor")
+		}
+		// The refusal wrote nothing, so the partition that does hold the factor
+		// still removes it and still clears the steps it spent.
+		if err := s.DeleteTOTP(ctx, "part_1", "usr_1"); err != nil {
+			t.Fatalf("DeleteTOTP from the partition holding the factor = %v; want nil", err)
+		}
+		if _, found, _ := s.TOTPSecret(ctx, "usr_1"); found {
+			t.Fatal("the factor survived a removal from its own partition")
+		}
+		if _, err := s.EnrolTOTP(ctx, "part_1", "usr_1", "THIRDSECRET23456"); err != nil {
+			t.Fatal(err)
+		}
+		if first, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil || !first {
+			t.Fatalf("after the removal and re-enrol the step = %v, %v; want true, nil", first, err)
+		}
+	})
+}
