@@ -258,3 +258,50 @@ func TestTOTP_ARemovalFromAnotherPartitionIsRefusedAndNotReportedDone(t *testing
 		}
 	})
 }
+
+// backupIdentifier carries no partition while the list, the drop and the redeem
+// carry one, so a recovery set written from a partition that does not hold the
+// subject's rows is refused before anything is dropped — otherwise the subject
+// holds part of a set in one partition and the rest in another, and
+// RedeemBackupCode reaches neither whole.
+func TestBackupCodes_ASetHeldUnderAnotherPartitionIsRefusedBeforeAnythingIsDropped(t *testing.T) {
+	eachVault(t, func(t *testing.T, store VaultStore) {
+		s := newServiceWith(t, store)
+		if err := s.ReplaceBackupCodes(ctx, "part_1", "usr_1", []string{"AAAA1111", "BBBB2222"}); err != nil {
+			t.Fatalf("the first set under part_1: %v", err)
+		}
+		if err := s.ReplaceBackupCodes(ctx, "part_2", "usr_1", []string{"CCCC3333"}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a set written from part_2 = %v; want ErrConflict", err)
+		}
+		// The refusal wrote nothing and dropped nothing: both codes of the set
+		// part_1 holds are still the subject's recovery.
+		if err := s.RedeemBackupCode(ctx, "part_1", "usr_1", "AAAA1111"); err != nil {
+			t.Fatalf("the first code of the held set = %v; want nil", err)
+		}
+		if err := s.RedeemBackupCode(ctx, "part_1", "usr_1", "BBBB2222"); err != nil {
+			t.Fatalf("the second code of the held set = %v; want nil", err)
+		}
+		// The check reaches every position the new set will occupy, so a set whose
+		// position 0 has been redeemed still refuses the other partition.
+		if err := s.ReplaceBackupCodes(ctx, "part_1", "usr_2", []string{"DDDD4444", "EEEE5555"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RedeemBackupCode(ctx, "part_1", "usr_2", "DDDD4444"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ReplaceBackupCodes(ctx, "part_2", "usr_2", []string{"FFFF6666", "GGGG7777"}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a set written from part_2 over a part-redeemed set = %v; want ErrConflict", err)
+		}
+		// The partition that does hold the set still replaces it, which is the
+		// ordinary path the refusal must not block.
+		if err := s.ReplaceBackupCodes(ctx, "part_1", "usr_2", []string{"HHHH8888"}); err != nil {
+			t.Fatalf("replacing the set from the partition holding it = %v; want nil", err)
+		}
+		if err := s.RedeemBackupCode(ctx, "part_1", "usr_2", "EEEE5555"); !errors.Is(err, ErrInvalidCredential) {
+			t.Fatalf("a code from the retired set = %v; want ErrInvalidCredential", err)
+		}
+		if err := s.RedeemBackupCode(ctx, "part_1", "usr_2", "HHHH8888"); err != nil {
+			t.Fatalf("a code from the current set = %v; want nil", err)
+		}
+	})
+}

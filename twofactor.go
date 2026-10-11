@@ -222,12 +222,33 @@ func (s *Service) DeleteTOTP(ctx context.Context, partition, subject string) err
 // recoverable copy of a credential for no reader. The previous set is dropped
 // first, so a code from it cannot be redeemed after the subject has been shown a
 // new set.
+//
+// A POSITION HELD UNDER ANOTHER PARTITION IS ErrConflict BEFORE ANYTHING IS
+// DROPPED. backupIdentifier carries no partition, while the list and the drop
+// below carry one: a set written over rows this partition cannot see would leave
+// the subject holding part of one set here and the rest of another there, with
+// RedeemBackupCode — which lists by partition — unable to reach either whole.
+// Every position the new set will occupy is checked, not only the first, because
+// RedeemBackupCode deletes the row it spends, so a set whose first codes have
+// been redeemed holds its remaining positions and not position 0.
 func (s *Service) ReplaceBackupCodes(ctx context.Context, partition, subject string, codes []string) error {
 	if partition == "" {
 		return ErrUnscoped
 	}
 	if subject == "" || len(codes) == 0 {
 		return errors.New("census: a backup-code set requires a subject and at least one code")
+	}
+	for i := range codes {
+		held, err := s.store.GetCredentialByIdentifier(ctx, KindBackupCode, backupIdentifier(subject, i))
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if held.Partition != partition {
+			return ErrConflict
+		}
 	}
 	existing, err := s.store.ListCredentialsBySubject(ctx, partition, subject)
 	if err != nil {
