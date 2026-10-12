@@ -2,7 +2,10 @@ package census
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/bbmumford/nexus"
@@ -13,16 +16,19 @@ import (
 // silently-mutated field: every change is provenance-stamped (who triggered it, from what source,
 // whether automatic). census records these but never interprets the opaque edge type.
 type TransferEvent struct {
-	ID      string
-	Partition   string // opaque partition-scope
-	From    string // edge source entity id
-	To      string // edge target entity id
-	Type    string // opaque edge type
-	Change  string // "grant" | "revoke"
-	Trigger string // opaque actor/subject that caused the change
-	Source  string // opaque origin ("invite-accept", "admin", "directory-sync")
-	Auto    bool   // true when applied by an automated flow, not a human action
-	At      time.Time
+	ID        string
+	Partition string // opaque partition-scope
+	From      string // edge source entity id
+	To        string // edge target entity id
+	Type      string // opaque edge type
+	Change    string // "grant" | "revoke"
+	Trigger   string // opaque actor/subject that caused the change
+	Source    string // opaque origin ("invite-accept", "admin", "directory-sync")
+	Auto      bool   // true when applied by an automated flow, not a human action
+	At        time.Time
+	// Seq is the event's place in the log, increasing in commit order. A log fills
+	// it on the events it returns; a caller recording an event leaves it zero.
+	Seq int64
 }
 
 // TransferLog is the append-only sink for relationship-change provenance. A consumer supplies a
@@ -34,10 +40,10 @@ type TransferLog interface {
 
 // ChangeMeta carries the provenance stamped onto a transfer event; all fields are opaque to census.
 type ChangeMeta struct {
-	Partition   string
-	Trigger string
-	Source  string
-	Auto    bool
+	Partition string
+	Trigger   string
+	Source    string
+	Auto      bool
 }
 
 // Guard is a precondition checked before a Revoke commits. It fails the revoke closed when removing the
@@ -72,6 +78,10 @@ type GraphService struct {
 	log   TransferLog
 	now   func() time.Time
 	newID func() string
+
+	// memAtomic serialises Atomic over the in-memory log from the graph commit to
+	// the log append, so the log's order is the graph's commit order (see Atomic).
+	memAtomic sync.Mutex
 }
 
 // GraphConfig wires a GraphService. Graph and Log are required — every relationship change must be
@@ -150,16 +160,16 @@ func (s *GraphService) RevokeKeepingMin(ctx context.Context, from, to, edgeType 
 
 func (s *GraphService) record(ctx context.Context, from, to, edgeType, change string, meta ChangeMeta) error {
 	return s.log.Record(ctx, &TransferEvent{
-		ID:      s.newID(),
-		Partition:   meta.Partition,
-		From:    from,
-		To:      to,
-		Type:    edgeType,
-		Change:  change,
-		Trigger: meta.Trigger,
-		Source:  meta.Source,
-		Auto:    meta.Auto,
-		At:      s.now(),
+		ID:        s.newID(),
+		Partition: meta.Partition,
+		From:      from,
+		To:        to,
+		Type:      edgeType,
+		Change:    change,
+		Trigger:   meta.Trigger,
+		Source:    meta.Source,
+		Auto:      meta.Auto,
+		At:        s.now(),
 	})
 }
 
@@ -204,3 +214,226 @@ var (
 	OutTargets = nexus.OutTargets
 	Via        = nexus.Via
 )
+
+// ErrNoTransaction is returned by View and Atomic when the graph and its log cannot
+// change in one transaction: the store is not a nexus.TxStore, its connector
+// refuses the transaction, or the log cannot write inside the store's transaction.
+// It is nexus's own sentinel, so a caller may match either.
+var ErrNoTransaction = nexus.ErrNoTransaction
+
+// sqlBacked is a store whose transactions are database/sql transactions on the
+// *sql.DB it returns: nexus.SQLStore.
+type sqlBacked interface{ DB() *sql.DB }
+
+// View runs fn over one read-only snapshot of the graph, so a decision made from
+// several reads is made from one state. It records nothing: a read changes no
+// relationship.
+func (s *GraphService) View(ctx context.Context, fn func(r nexus.GraphReader) error) error {
+	ts, ok := s.graph.(nexus.TxStore)
+	if !ok {
+		return ErrNoTransaction
+	}
+	return ts.View(ctx, fn)
+}
+
+// Atomic runs fn in one serializable transaction: every change fn makes through
+// the GraphTx and every transfer event recording it commit together, or none does.
+// A check fn makes on a read is still true when its write commits.
+//
+// The pairs that can do this are a SQL store with the SQL log on the same *sql.DB,
+// whose events are written in the store's own transaction, and the in-memory store
+// with the in-memory log, whose events are appended after the graph commit while
+// memAtomic is held, so the log's order is still commit order and a rolled-back fn
+// leaves no event. Any other pair answers ErrNoTransaction before fn runs.
+func (s *GraphService) Atomic(ctx context.Context, fn func(tx *GraphTx) error) error {
+	ts, ok := s.graph.(nexus.TxStore)
+	if !ok {
+		return ErrNoTransaction
+	}
+	switch log := s.log.(type) {
+	case *SQLTransferLog:
+		sb, ok := s.graph.(sqlBacked)
+		if !ok || sb.DB() != log.db {
+			return ErrNoTransaction
+		}
+		return ts.Update(ctx, func(w nexus.TxWriter) error {
+			sw, ok := w.(*nexus.SQLTxWriter)
+			if !ok {
+				return ErrNoTransaction
+			}
+			return fn(s.newTx(w, func(ctx context.Context, events []*TransferEvent) error {
+				return log.RecordTx(ctx, sw.Tx(), events...)
+			}))
+		})
+	case *MemTransferLog:
+		if _, ok := s.graph.(sqlBacked); ok {
+			return ErrNoTransaction
+		}
+		s.memAtomic.Lock()
+		defer s.memAtomic.Unlock()
+		var pending []*TransferEvent
+		err := ts.Update(ctx, func(w nexus.TxWriter) error {
+			pending = pending[:0]
+			return fn(s.newTx(w, func(_ context.Context, events []*TransferEvent) error {
+				pending = append(pending, events...)
+				return nil
+			}))
+		})
+		if err != nil {
+			return err
+		}
+		for _, e := range pending {
+			if err := log.Record(ctx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return ErrNoTransaction
+	}
+}
+
+// GraphTx is the handle Atomic passes its function: the reads, and every write
+// paired with the transfer event that records it. It holds no write that records
+// nothing, so a consumer inside Atomic cannot change an edge the log does not name.
+type GraphTx struct {
+	w      nexus.TxWriter
+	now    func() time.Time
+	newID  func() string
+	record func(ctx context.Context, events []*TransferEvent) error
+}
+
+func (s *GraphService) newTx(w nexus.TxWriter, record func(context.Context, []*TransferEvent) error) *GraphTx {
+	return &GraphTx{w: w, now: s.now, newID: s.newID, record: record}
+}
+
+func (t *GraphTx) event(k nexus.EdgeKey, change string, meta ChangeMeta, at time.Time) *TransferEvent {
+	return &TransferEvent{
+		ID: t.newID(), Partition: meta.Partition, From: k.From, To: k.To, Type: k.Type,
+		Change: change, Trigger: meta.Trigger, Source: meta.Source, Auto: meta.Auto, At: at,
+	}
+}
+
+// revoked records one revoke event per key, in the keys' order, in one write.
+func (t *GraphTx) revoked(ctx context.Context, keys []nexus.EdgeKey, meta ChangeMeta) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	at := t.now()
+	events := make([]*TransferEvent, len(keys))
+	for i, k := range keys {
+		events[i] = t.event(k, "revoke", meta, at)
+	}
+	return t.record(ctx, events)
+}
+
+// Grant writes the edge and records a "grant" event, a re-grant included, as the
+// service's Grant does.
+func (t *GraphTx) Grant(ctx context.Context, from, to, edgeType string, attrs map[string]string, meta ChangeMeta) error {
+	if err := t.w.PutRelationship(ctx, &nexus.Relationship{From: from, To: to, Type: edgeType, Attrs: attrs}); err != nil {
+		return err
+	}
+	return t.record(ctx, []*TransferEvent{t.event(nexus.EdgeKey{From: from, To: to, Type: edgeType}, "grant", meta, t.now())})
+}
+
+// Revoke removes the edge and records a "revoke" event when there was one to
+// remove. Inside the transaction the read and the delete see the same state, so
+// the log names only removals that happened.
+func (t *GraphTx) Revoke(ctx context.Context, from, to, edgeType string, meta ChangeMeta) error {
+	held, err := t.w.HasRelationship(ctx, from, to, edgeType)
+	if err != nil || !held {
+		return err
+	}
+	if err := t.w.DeleteRelationship(ctx, from, to, edgeType); err != nil {
+		return err
+	}
+	return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+}
+
+// RevokeKeepingMin is the service's RevokeKeepingMin inside the transaction: the
+// floor is counted in it, and the event is recorded only for an edge removed.
+func (t *GraphTx) RevokeKeepingMin(ctx context.Context, from, to, edgeType string, min int, meta ChangeMeta) error {
+	held, err := t.w.HasRelationship(ctx, from, to, edgeType)
+	if err != nil {
+		return err
+	}
+	if err := t.w.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min); err != nil || !held {
+		return err
+	}
+	return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+}
+
+// RevokeWhere removes every edge sel names with one statement, records one revoke
+// event per removed edge in the returned key order, and returns the keys. Removing
+// a subject's records or a target's holders is one set change at any count.
+func (t *GraphTx) RevokeWhere(ctx context.Context, sel nexus.EdgeSelector, meta ChangeMeta) ([]nexus.EdgeKey, error) {
+	keys, err := t.w.DeleteEdgesWhere(ctx, sel)
+	if err != nil {
+		return nil, err
+	}
+	return keys, t.revoked(ctx, keys, meta)
+}
+
+// PutEntity writes an entity. Entities are not relationships, so it records nothing.
+func (t *GraphTx) PutEntity(ctx context.Context, e *nexus.Entity) error {
+	return t.w.PutEntity(ctx, e)
+}
+
+// DeleteEntity removes the entity and every edge incident to it, recording a
+// revoke event for each such edge, ordered by key, so no edge leaves the graph
+// unrecorded. An unknown id answers nexus.ErrNotFound and records nothing.
+func (t *GraphTx) DeleteEntity(ctx context.Context, id string, meta ChangeMeta) error {
+	out, err := t.w.OutEdges(ctx, id)
+	if err != nil {
+		return err
+	}
+	in, err := t.w.InEdges(ctx, id)
+	if err != nil {
+		return err
+	}
+	seen := map[nexus.EdgeKey]bool{}
+	var keys []nexus.EdgeKey
+	for _, r := range append(out, in...) {
+		k := nexus.EdgeKey{From: r.From, To: r.To, Type: r.Type}
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.From != b.From {
+			return a.From < b.From
+		}
+		if a.To != b.To {
+			return a.To < b.To
+		}
+		return a.Type < b.Type
+	})
+	if err := t.w.DeleteEntity(ctx, id); err != nil {
+		return err
+	}
+	return t.revoked(ctx, keys, meta)
+}
+
+// GetEntity, ListEntitiesByType, HasRelationship, OutEdges and InEdges read inside
+// the transaction and see its own writes.
+func (t *GraphTx) GetEntity(ctx context.Context, id string) (*nexus.Entity, error) {
+	return t.w.GetEntity(ctx, id)
+}
+
+func (t *GraphTx) ListEntitiesByType(ctx context.Context, typ string) ([]nexus.Entity, error) {
+	return t.w.ListEntitiesByType(ctx, typ)
+}
+
+func (t *GraphTx) HasRelationship(ctx context.Context, from, to, typ string) (bool, error) {
+	return t.w.HasRelationship(ctx, from, to, typ)
+}
+
+func (t *GraphTx) OutEdges(ctx context.Context, from string, types ...string) ([]nexus.Relationship, error) {
+	return t.w.OutEdges(ctx, from, types...)
+}
+
+func (t *GraphTx) InEdges(ctx context.Context, to string, types ...string) ([]nexus.Relationship, error) {
+	return t.w.InEdges(ctx, to, types...)
+}

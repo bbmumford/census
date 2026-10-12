@@ -383,8 +383,31 @@ func (l *MemTransferLog) Record(_ context.Context, e *TransferEvent) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	cp := *e // TransferEvent holds no maps/pointers, so a shallow copy fully isolates it
+	cp.Seq = int64(len(l.events)) + 1
 	l.events = append(l.events, &cp)
 	return nil
+}
+
+// Since returns up to limit events recorded after seq, across every partition, in
+// seq order, as SQLTransferLog.Since does.
+func (l *MemTransferLog) Since(_ context.Context, seq int64, limit int) ([]*TransferEvent, error) {
+	if limit <= 0 {
+		return nil, errSinceLimit
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []*TransferEvent
+	for _, e := range l.events {
+		if e.Seq <= seq {
+			continue
+		}
+		cp := *e
+		out = append(out, &cp)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // List returns every recorded event where the entity is the edge source or target, scoped to one
