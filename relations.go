@@ -261,9 +261,9 @@ func (s *GraphService) Atomic(ctx context.Context, fn func(tx *GraphTx) error) e
 			if !ok {
 				return ErrNoTransaction
 			}
-			return fn(s.newTx(w, func(ctx context.Context, events []*TransferEvent) error {
+			return s.newTx(w, func(ctx context.Context, events []*TransferEvent) error {
 				return log.RecordTx(ctx, sw.Tx(), events...)
-			}))
+			}).run(fn)
 		})
 	case *MemTransferLog:
 		if _, ok := s.graph.(sqlBacked); ok {
@@ -274,10 +274,10 @@ func (s *GraphService) Atomic(ctx context.Context, fn func(tx *GraphTx) error) e
 		var pending []*TransferEvent
 		err := ts.Update(ctx, func(w nexus.TxWriter) error {
 			pending = pending[:0]
-			return fn(s.newTx(w, func(_ context.Context, events []*TransferEvent) error {
+			return s.newTx(w, func(_ context.Context, events []*TransferEvent) error {
 				pending = append(pending, events...)
 				return nil
-			}))
+			}).run(fn)
 		})
 		if err != nil {
 			return err
@@ -296,15 +296,47 @@ func (s *GraphService) Atomic(ctx context.Context, fn func(tx *GraphTx) error) e
 // GraphTx is the handle Atomic passes its function: the reads, and every write
 // paired with the transfer event that records it. It holds no write that records
 // nothing, so a consumer inside Atomic cannot change an edge the log does not name.
+//
+// err holds the first write that failed after it may have changed the graph, its
+// event's record included: the edge write and the record are two statements, so a
+// failed record follows a change already made. Once err is set every later write
+// answers it and Atomic returns it even when fn returns nil, so a function that
+// drops a write's error cannot commit a change without its event.
 type GraphTx struct {
 	w      nexus.TxWriter
 	now    func() time.Time
 	newID  func() string
 	record func(ctx context.Context, events []*TransferEvent) error
+	err    error
 }
 
 func (s *GraphService) newTx(w nexus.TxWriter, record func(context.Context, []*TransferEvent) error) *GraphTx {
 	return &GraphTx{w: w, now: s.now, newID: s.newID, record: record}
+}
+
+// run is Atomic's body inside the store transaction: fn's own error first, then
+// any write fn dropped, so the transaction commits only when neither is set.
+func (t *GraphTx) run(fn func(tx *GraphTx) error) error {
+	if err := fn(t); err != nil {
+		return err
+	}
+	return t.err
+}
+
+// do runs one write unless an earlier one failed, and keeps its error unless it is
+// a refusal nexus decides before writing (nexus.ErrNotFound,
+// nexus.ErrCardinalityFloor, nexus.ErrInvalidSelector), which a function may catch
+// and go on from.
+func (t *GraphTx) do(write func() error) error {
+	if t.err != nil {
+		return t.err
+	}
+	err := write()
+	if err != nil && !errors.Is(err, nexus.ErrNotFound) && !errors.Is(err, nexus.ErrCardinalityFloor) &&
+		!errors.Is(err, nexus.ErrInvalidSelector) {
+		t.err = err
+	}
+	return err
 }
 
 func (t *GraphTx) event(k nexus.EdgeKey, change string, meta ChangeMeta, at time.Time) *TransferEvent {
@@ -330,90 +362,105 @@ func (t *GraphTx) revoked(ctx context.Context, keys []nexus.EdgeKey, meta Change
 // Grant writes the edge and records a "grant" event, a re-grant included, as the
 // service's Grant does.
 func (t *GraphTx) Grant(ctx context.Context, from, to, edgeType string, attrs map[string]string, meta ChangeMeta) error {
-	if err := t.w.PutRelationship(ctx, &nexus.Relationship{From: from, To: to, Type: edgeType, Attrs: attrs}); err != nil {
-		return err
-	}
-	return t.record(ctx, []*TransferEvent{t.event(nexus.EdgeKey{From: from, To: to, Type: edgeType}, "grant", meta, t.now())})
+	return t.do(func() error {
+		if err := t.w.PutRelationship(ctx, &nexus.Relationship{From: from, To: to, Type: edgeType, Attrs: attrs}); err != nil {
+			return err
+		}
+		return t.record(ctx, []*TransferEvent{t.event(nexus.EdgeKey{From: from, To: to, Type: edgeType}, "grant", meta, t.now())})
+	})
 }
 
 // Revoke removes the edge and records a "revoke" event when there was one to
 // remove. Inside the transaction the read and the delete see the same state, so
 // the log names only removals that happened.
 func (t *GraphTx) Revoke(ctx context.Context, from, to, edgeType string, meta ChangeMeta) error {
-	held, err := t.w.HasRelationship(ctx, from, to, edgeType)
-	if err != nil || !held {
-		return err
-	}
-	if err := t.w.DeleteRelationship(ctx, from, to, edgeType); err != nil {
-		return err
-	}
-	return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+	return t.do(func() error {
+		held, err := t.w.HasRelationship(ctx, from, to, edgeType)
+		if err != nil || !held {
+			return err
+		}
+		if err := t.w.DeleteRelationship(ctx, from, to, edgeType); err != nil {
+			return err
+		}
+		return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+	})
 }
 
 // RevokeKeepingMin is the service's RevokeKeepingMin inside the transaction: the
 // floor is counted in it, and the event is recorded only for an edge removed.
 func (t *GraphTx) RevokeKeepingMin(ctx context.Context, from, to, edgeType string, min int, meta ChangeMeta) error {
-	held, err := t.w.HasRelationship(ctx, from, to, edgeType)
-	if err != nil {
-		return err
-	}
-	if err := t.w.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min); err != nil || !held {
-		return err
-	}
-	return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+	return t.do(func() error {
+		held, err := t.w.HasRelationship(ctx, from, to, edgeType)
+		if err != nil {
+			return err
+		}
+		if err := t.w.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min); err != nil || !held {
+			return err
+		}
+		return t.revoked(ctx, []nexus.EdgeKey{{From: from, To: to, Type: edgeType}}, meta)
+	})
 }
 
 // RevokeWhere removes every edge sel names with one statement, records one revoke
 // event per removed edge in the returned key order, and returns the keys. Removing
 // a subject's records or a target's holders is one set change at any count.
 func (t *GraphTx) RevokeWhere(ctx context.Context, sel nexus.EdgeSelector, meta ChangeMeta) ([]nexus.EdgeKey, error) {
-	keys, err := t.w.DeleteEdgesWhere(ctx, sel)
-	if err != nil {
-		return nil, err
-	}
-	return keys, t.revoked(ctx, keys, meta)
+	var keys []nexus.EdgeKey
+	err := t.do(func() error {
+		var err error
+		keys, err = t.w.DeleteEdgesWhere(ctx, sel)
+		if err != nil {
+			return err
+		}
+		return t.revoked(ctx, keys, meta)
+	})
+	return keys, err
 }
 
 // PutEntity writes an entity. Entities are not relationships, so it records nothing.
 func (t *GraphTx) PutEntity(ctx context.Context, e *nexus.Entity) error {
-	return t.w.PutEntity(ctx, e)
+	return t.do(func() error {
+		return t.w.PutEntity(ctx, e)
+	})
 }
 
 // DeleteEntity removes the entity and every edge incident to it, recording a
 // revoke event for each such edge, ordered by key, so no edge leaves the graph
 // unrecorded. An unknown id answers nexus.ErrNotFound and records nothing.
 func (t *GraphTx) DeleteEntity(ctx context.Context, id string, meta ChangeMeta) error {
-	out, err := t.w.OutEdges(ctx, id)
-	if err != nil {
-		return err
-	}
-	in, err := t.w.InEdges(ctx, id)
-	if err != nil {
-		return err
-	}
-	seen := map[nexus.EdgeKey]bool{}
-	var keys []nexus.EdgeKey
-	for _, r := range append(out, in...) {
-		k := nexus.EdgeKey{From: r.From, To: r.To, Type: r.Type}
-		if !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
+	return t.do(func() error {
+		out, err := t.w.OutEdges(ctx, id)
+		if err != nil {
+			return err
 		}
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.From != b.From {
-			return a.From < b.From
+		in, err := t.w.InEdges(ctx, id)
+		if err != nil {
+			return err
 		}
-		if a.To != b.To {
-			return a.To < b.To
+		seen := map[nexus.EdgeKey]bool{}
+		var keys []nexus.EdgeKey
+		for _, r := range append(out, in...) {
+			k := nexus.EdgeKey{From: r.From, To: r.To, Type: r.Type}
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
 		}
-		return a.Type < b.Type
+		sort.Slice(keys, func(i, j int) bool {
+			a, b := keys[i], keys[j]
+			if a.From != b.From {
+				return a.From < b.From
+			}
+			if a.To != b.To {
+				return a.To < b.To
+			}
+			return a.Type < b.Type
+		})
+		if err := t.w.DeleteEntity(ctx, id); err != nil {
+			return err
+		}
+		return t.revoked(ctx, keys, meta)
 	})
-	if err := t.w.DeleteEntity(ctx, id); err != nil {
-		return err
-	}
-	return t.revoked(ctx, keys, meta)
 }
 
 // GetEntity, ListEntitiesByType, HasRelationship, OutEdges and InEdges read inside

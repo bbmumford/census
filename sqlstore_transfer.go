@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"unicode/utf8"
 )
 
 // SQLTransferLog is the durable default TransferLog over any database/sql driver — the shipped
@@ -113,6 +114,13 @@ func (l *SQLTransferLog) Since(ctx context.Context, seq int64, limit int) ([]*Tr
 	return scanTransfers(rows)
 }
 
+// errEventNotUTF8 refuses an event RecordTx cannot write byte for byte. RecordTx
+// passes events through JSON, and encoding/json replaces bytes that are not UTF-8,
+// so the event would name an edge other than the one changed, and two such ids
+// could name the same one. Record binds each field and keeps any bytes, so only
+// the transactional path refuses; GraphTx then fails the whole Atomic.
+var errEventNotUTF8 = errors.New("census: a transfer event field is not valid UTF-8")
+
 // transferRow is one event as RecordTx passes it to json_each.
 type transferRow struct {
 	ID        string `json:"id"`
@@ -144,6 +152,11 @@ func (l *SQLTransferLog) RecordTx(ctx context.Context, tx *sql.Tx, events ...*Tr
 	for i, e := range events {
 		if e.ID == "" {
 			e.ID = randomID()
+		}
+		for _, f := range []string{e.ID, e.Partition, e.From, e.To, e.Type, e.Change, e.Trigger, e.Source} {
+			if !utf8.ValidString(f) {
+				return errEventNotUTF8
+			}
 		}
 		auto := 0
 		if e.Auto {
