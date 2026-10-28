@@ -33,6 +33,10 @@ var (
 	ErrNoPartition = errors.New("census: subject has no resolvable partition")
 	// ErrIdentityIncomplete is returned when the provider identity key is empty.
 	ErrIdentityIncomplete = errors.New("census: provider identity incomplete")
+	// ErrIdentityHeld is returned by Found when a subject already holds the
+	// provider identity, so a founding write never creates a second account for
+	// one identity.
+	ErrIdentityHeld = errors.New("census: the provider identity already belongs to a subject")
 )
 
 // Provisioner turns an external provider identity into a census subject: it finds
@@ -172,6 +176,63 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 	}
 	if err := p.graph.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
 		return "", "", fmt.Errorf("census: grant membership: %w", err)
+	}
+	return subject, partition, nil
+}
+
+// Found creates, in one transaction, a fresh partition, a subject for
+// identity, the subject's identity edge and its membership edge into that
+// partition (written with the configured MembershipAttrs), and returns the
+// subject and partition. It is the founding write a sign-up makes for a
+// verified identity no subject holds; EnsureUser is the sign-in path and never
+// founds unless its assigner does.
+//
+// The identity lookup runs inside the transaction, so an identity held by a
+// subject, including one founded concurrently, is ErrIdentityHeld and nothing
+// is written. partitionType defaults to "partition". A graph store that cannot
+// run a transaction answers ErrNoTransaction and writes nothing.
+func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, partitionType string) (subject string, partition string, err error) {
+	if identity.Provider == "" || identity.ProviderUserID == "" {
+		return "", "", ErrIdentityIncomplete
+	}
+	if partitionType == "" {
+		partitionType = "partition"
+	}
+	idEdge := "identity:" + identity.Provider
+	err = p.graph.Atomic(ctx, func(tx *GraphTx) error {
+		held, err := tx.InEdges(ctx, identity.ProviderUserID, idEdge)
+		if err != nil {
+			return fmt.Errorf("census: lookup identity: %w", err)
+		}
+		if len(held) > 0 {
+			return ErrIdentityHeld
+		}
+		partition = tx.newID()
+		if err := tx.PutEntity(ctx, &nexus.Entity{ID: partition, Type: partitionType}); err != nil {
+			return fmt.Errorf("census: mint partition: %w", err)
+		}
+		subject = tx.newID()
+		attrs := map[string]string{}
+		if identity.Email != "" {
+			attrs["email"] = identity.Email
+		}
+		if identity.Name != "" {
+			attrs["name"] = identity.Name
+		}
+		if err := tx.PutEntity(ctx, &nexus.Entity{ID: subject, Type: p.userType, Attrs: attrs}); err != nil {
+			return fmt.Errorf("census: create subject: %w", err)
+		}
+		meta := ChangeMeta{Partition: partition, Trigger: "found", Source: identity.Provider}
+		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, nil, meta); err != nil {
+			return fmt.Errorf("census: grant identity edge: %w", err)
+		}
+		if err := tx.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
+			return fmt.Errorf("census: grant membership: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", err
 	}
 	return subject, partition, nil
 }

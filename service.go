@@ -162,6 +162,34 @@ func (s *Service) ConfirmEmail(ctx context.Context, rawToken string) (subject st
 	return v.Subject, nil
 }
 
+// ConfirmEmailAddress consumes a raw verification token issued for email and
+// returns the subject it was issued for, which is "" for a code issued to an
+// address no subject holds (a first-time address a sign-up founds). A token
+// issued for another address is ErrNotFound and is not consumed, so a code is
+// redeemed only together with the address it was sent to. A consumed or expired
+// token is ErrExpired; an unknown token is ErrNotFound.
+func (s *Service) ConfirmEmailAddress(ctx context.Context, email, rawToken string) (subject string, err error) {
+	email = normalizeEmail(email)
+	if email == "" {
+		return "", ErrNotFound
+	}
+	v, err := s.store.GetEmailVerificationByToken(ctx, hashHex(rawToken))
+	if err != nil {
+		return "", err
+	}
+	if v.Identifier != hashHex(email) {
+		return "", ErrNotFound
+	}
+	now := s.now()
+	if v.ConsumedAt != nil || (v.ExpiresAt != nil && now.After(*v.ExpiresAt)) {
+		return "", ErrExpired
+	}
+	if err := s.store.MarkEmailVerificationConsumed(ctx, v.ID, now.UnixNano()); err != nil {
+		return "", err
+	}
+	return v.Subject, nil
+}
+
 // ── Invitations ──
 
 // Invite creates a pending invitation for an email to receive an opaque grant (a graph edge of
