@@ -34,12 +34,13 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 		// The login identifier is unique per credential kind — a second subject cannot claim it.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_census_cred_identity ON census_credentials(kind, identifier_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_cred_subject ON census_credentials(partition, subject)`,
-		// An email code is signed, not stored; only the id of one already used is kept, until the
-		// code's expiry, so SpendEmailCode refuses it a second time.
-		`CREATE TABLE IF NOT EXISTS census_spent_email_codes (
+		// A single-use token (an email code, a login handoff, a native sign-in code) is signed, not
+		// stored; only the id of one already used is kept, until the token's expiry, so SpendID
+		// refuses it a second time.
+		`CREATE TABLE IF NOT EXISTS census_spent_ids (
 			id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_spent_code_expiry ON census_spent_email_codes(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_census_spent_id_expiry ON census_spent_ids(expires_at)`,
 		// A step is spent once per subject, whatever partition's request presents the code, so the key
 		// is (subject, step) and partition is carried for the scoped clear DeleteSpentSteps performs.
 		`CREATE TABLE IF NOT EXISTS census_spent_steps (

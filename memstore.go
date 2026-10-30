@@ -15,7 +15,7 @@ import (
 type MemStore struct {
 	mu            sync.Mutex
 	credentials   map[string]*Credential
-	spentCodes    map[string]int64
+	spentIDs      map[string]int64
 	apiKeys       map[string]*APIKey
 	spentSteps    map[spentStep]spentRecord
 	newID         func() string
@@ -25,7 +25,7 @@ type MemStore struct {
 func NewMemStore() *MemStore {
 	return &MemStore{
 		credentials:   map[string]*Credential{},
-		spentCodes:    map[string]int64{},
+		spentIDs:      map[string]int64{},
 		apiKeys:       map[string]*APIKey{},
 		spentSteps:    map[spentStep]spentRecord{},
 		newID:         randomID,
@@ -149,22 +149,21 @@ func (m *MemStore) DeleteSpentSteps(_ context.Context, partition, subject string
 	return nil
 }
 
-// ── Spent email codes ──
+// ── Spent single-use ids ──
 
-// SpendEmailCode holds the lock across the prune, the read and the write, for the reason SpendStep
-// does.
-func (m *MemStore) SpendEmailCode(_ context.Context, id string, expiresAt, now int64) (bool, error) {
+// SpendID holds the lock across the prune, the read and the write, for the reason SpendStep does.
+func (m *MemStore) SpendID(_ context.Context, id string, expiresAt, now int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for k, exp := range m.spentCodes {
+	for k, exp := range m.spentIDs {
 		if exp < now {
-			delete(m.spentCodes, k)
+			delete(m.spentIDs, k)
 		}
 	}
-	if _, seen := m.spentCodes[id]; seen {
+	if _, seen := m.spentIDs[id]; seen {
 		return false, nil
 	}
-	m.spentCodes[id] = expiresAt
+	m.spentIDs[id] = expiresAt
 	return true, nil
 }
 

@@ -123,6 +123,9 @@ func (s *Service) Authenticate(ctx context.Context, identifier, password string)
 // fall back on.
 var ErrNoEmailCodes = errors.New("census: no email code signer configured")
 
+// ErrNoSpentID is returned by SpendID for an empty id.
+var ErrNoSpentID = errors.New("census: no id to spend")
+
 // IssueEmailVerification signs an email code for a subject's address that expires ttl from now, through
 // Config.Codes. Nothing is stored: the code carries its id, its partition and subject, the address's
 // deterministic hash and its expiry, and the RAW code returned is the only copy. ttl must be positive,
@@ -199,7 +202,7 @@ func (s *Service) openEmailCode(rawToken string) (EmailCode, error) {
 
 // spendEmailCode puts an opened code's id on the spent list, ErrExpired when it is already there.
 func (s *Service) spendEmailCode(ctx context.Context, c EmailCode) error {
-	first, err := s.store.SpendEmailCode(ctx, c.ID, c.ExpiresAt.UnixNano(), s.now().UnixNano())
+	first, err := s.store.SpendID(ctx, c.ID, c.ExpiresAt.UnixNano(), s.now().UnixNano())
 	if err != nil {
 		return err
 	}
@@ -207,6 +210,18 @@ func (s *Service) spendEmailCode(ctx context.Context, c EmailCode) error {
 		return ErrExpired
 	}
 	return nil
+}
+
+// SpendID puts the id of a single-use token another component signed — a login handoff, a native
+// sign-in code — on the store's spent list until expiresAt, reporting whether this call is the first
+// to put it there. An empty id is refused: it names no token, and recording it would refuse every
+// later empty id. The consumer verifies the token before it spends the id and refuses a token whose
+// id was already spent.
+func (s *Service) SpendID(ctx context.Context, id string, expiresAt time.Time) (bool, error) {
+	if id == "" {
+		return false, ErrNoSpentID
+	}
+	return s.store.SpendID(ctx, id, expiresAt.UnixNano(), s.now().UnixNano())
 }
 
 // ── API keys ──

@@ -139,23 +139,23 @@ func TestEmailVerification_ConfirmOnceAndExpiry(t *testing.T) {
 	})
 }
 
-// A used code's id is kept until the code's own expiry and then deleted: the entry is pruned on the
-// next spend after that expiry, so the list holds only codes whose signature still opens.
-func TestSpentEmailCodesArePrunedAfterTheirExpiry(t *testing.T) {
+// A used token's id is kept until the token's own expiry and then deleted: the entry is pruned on the
+// next spend after that expiry, so the list holds only tokens whose signature still opens.
+func TestSpentIDsArePrunedAfterTheirExpiry(t *testing.T) {
 	eachVault(t, func(t *testing.T, store VaultStore) {
 		now := time.Unix(1_000_000, 0).UTC()
 		exp := now.Add(15 * time.Minute).UnixNano()
-		if first, err := store.SpendEmailCode(ctx, "c1", exp, now.UnixNano()); err != nil || !first {
+		if first, err := store.SpendID(ctx, "c1", exp, now.UnixNano()); err != nil || !first {
 			t.Fatalf("first spend = %v, %v", first, err)
 		}
-		if first, err := store.SpendEmailCode(ctx, "c1", exp, now.Add(time.Minute).UnixNano()); err != nil || first {
+		if first, err := store.SpendID(ctx, "c1", exp, now.Add(time.Minute).UnixNano()); err != nil || first {
 			t.Fatalf("second spend before expiry = %v, %v; want refused", first, err)
 		}
 		later := now.Add(16 * time.Minute).UnixNano()
-		if first, err := store.SpendEmailCode(ctx, "c2", later+int64(time.Minute), later); err != nil || !first {
+		if first, err := store.SpendID(ctx, "c2", later+int64(time.Minute), later); err != nil || !first {
 			t.Fatalf("a spend after c1's expiry = %v, %v", first, err)
 		}
-		if first, err := store.SpendEmailCode(ctx, "c1", later+int64(time.Minute), later); err != nil || !first {
+		if first, err := store.SpendID(ctx, "c1", later+int64(time.Minute), later); err != nil || !first {
 			t.Fatalf("c1 after its expiry = %v, %v; want its entry pruned", first, err)
 		}
 	})
@@ -260,4 +260,23 @@ func TestVaultStore_EmptyPartitionReachesNothing(t *testing.T) {
 			t.Fatalf("the owning partition must be able to revoke its own key: %v", err)
 		}
 	})
+}
+
+// Service.SpendID spends an id once until its expiry, through the store the email codes spend into,
+// and refuses an empty id.
+func TestServiceSpendIDSpendsOnce(t *testing.T) {
+	svc, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Now().Add(time.Minute)
+	if first, err := svc.SpendID(ctx, "handoff-1", exp); err != nil || !first {
+		t.Fatalf("first spend = %v, %v", first, err)
+	}
+	if first, err := svc.SpendID(ctx, "handoff-1", exp); err != nil || first {
+		t.Fatalf("second spend = %v, %v; want refused", first, err)
+	}
+	if _, err := svc.SpendID(ctx, "", exp); !errors.Is(err, ErrNoSpentID) {
+		t.Fatalf("empty id: err = %v, want ErrNoSpentID", err)
+	}
 }

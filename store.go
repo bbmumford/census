@@ -13,7 +13,7 @@ var ErrNotFound = errors.New("census: not found")
 var ErrConflict = errors.New("census: conflict")
 
 // VaultStore persists the account-feature records that carry secrets — credentials, the ids of spent
-// email codes, and API keys. Only sealed material reaches it: encrypted second-factor secrets,
+// single-use tokens, and API keys. Only sealed material reaches it: encrypted second-factor secrets,
 // deterministic identifier/token hashes, and Hasher-produced password digests. The Partition is opaque and
 // the store filters on it, never interprets it; an empty partition ("") on a partition-scoped read matches
 // NOTHING — the predicates read (? <> '' AND partition = ?), so an unscoped read returns no rows rather
@@ -30,13 +30,16 @@ type VaultStore interface {
 	ListCredentialsBySubject(ctx context.Context, partition, subject string) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, partition, id string) error
 
-	// ── Spent email codes ──
-	// SpendEmailCode records that the email code id is used and reports whether this call is the
-	// first to record it. It MUST be atomic against a concurrent call for the same id, for the reason
-	// SpendStep is. expiresAt is the code's expiry and now the instant of use, both Unix nanoseconds;
-	// every call first deletes the entries whose expiry is before now, since the code's signature
-	// refuses it from then on and its entry has nothing left to refuse.
-	SpendEmailCode(ctx context.Context, id string, expiresAt, now int64) (first bool, err error)
+	// ── Spent single-use ids ──
+	// SpendID records that the single-use token id is used and reports whether this call is the first
+	// to record it. It holds the id alone, never the token or a hash of it, for every kind of signed
+	// single-use token: emailed sign-in codes here, and the login handoff and native sign-in codes a
+	// login authority issues. Their ids are random, so one list serves every kind. It MUST be atomic
+	// against a concurrent call for the same id, for the reason SpendStep is. expiresAt is the token's
+	// expiry and now the instant of use, both Unix nanoseconds; every call first deletes the entries
+	// whose expiry is before now, since the token's signature refuses it from then on and its entry
+	// has nothing left to refuse.
+	SpendID(ctx context.Context, id string, expiresAt, now int64) (first bool, err error)
 
 	// ── Second-factor spent steps ──
 	// SpendStep records that a subject has spent one time step and reports whether this call is the
