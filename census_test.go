@@ -109,52 +109,6 @@ func TestEmailVerification_ConfirmOnceAndExpiry(t *testing.T) {
 	})
 }
 
-func TestInvitation_AcceptCarriesOpaqueGrant(t *testing.T) {
-	eachVault(t, func(t *testing.T, store VaultStore) {
-		now := time.Unix(2_000_000, 0).UTC()
-		s := newServiceWith(t, store)
-		fixedClock(s, now)
-		tok, inv, err := s.Invite(ctx, "acme", "carol@x.com", "org-9", "member", map[string]string{"role": "admin"}, time.Hour)
-		if err != nil || tok == "" {
-			t.Fatalf("invite: %v", err)
-		}
-		// a second pending invite for the same email + target conflicts
-		if _, _, err := s.Invite(ctx, "acme", "carol@x.com", "org-9", "member", nil, time.Hour); !errors.Is(err, ErrConflict) {
-			t.Fatal("a duplicate pending invitation must be ErrConflict")
-		}
-		// accept returns the opaque grant for the consumer to write into the graph
-		got, err := s.AcceptInvitation(ctx, tok)
-		if err != nil || got.GrantTo != "org-9" || got.GrantType != "member" || got.GrantAttrs["role"] != "admin" {
-			t.Fatalf("accept must carry the opaque grant; got %+v err=%v", got, err)
-		}
-		if got.Status != "accepted" || got.AcceptedAt == nil {
-			t.Fatal("accept must mark the invitation accepted")
-		}
-		// re-accepting the same token fails
-		if _, err := s.AcceptInvitation(ctx, tok); !errors.Is(err, ErrExpired) {
-			t.Fatal("an accepted invitation must not accept again")
-		}
-		// once the pending one is resolved, a fresh invite to the same target is allowed
-		if _, _, err := s.Invite(ctx, "acme", "carol@x.com", "org-9", "member", nil, time.Hour); err != nil {
-			t.Fatalf("a re-invite after acceptance must be allowed; got %v", err)
-		}
-		_ = inv
-	})
-}
-
-func TestInvitation_RevokeBlocksAccept(t *testing.T) {
-	eachVault(t, func(t *testing.T, store VaultStore) {
-		s := newServiceWith(t, store)
-		tok, inv, _ := s.Invite(ctx, "acme", "d@x.com", "org-1", "member", nil, 0)
-		if err := s.RevokeInvitation(ctx, inv.ID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.AcceptInvitation(ctx, tok); !errors.Is(err, ErrExpired) {
-			t.Fatal("a revoked invitation must not accept")
-		}
-	})
-}
-
 func TestAPIKey_MintVerifyRevoke(t *testing.T) {
 	eachVault(t, func(t *testing.T, store VaultStore) {
 		now := time.Unix(3_000_000, 0).UTC()

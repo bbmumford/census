@@ -41,15 +41,6 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 			expires_at INTEGER, consumed_at INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_verify_token ON census_email_verifications(token_hash)`,
-		`CREATE TABLE IF NOT EXISTS census_invitations (
-			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', identifier_enc TEXT NOT NULL DEFAULT '',
-			identifier TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL DEFAULT '',
-			grant_to TEXT NOT NULL DEFAULT '', grant_type TEXT NOT NULL DEFAULT '',
-			grant_attrs TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT '',
-			created_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER, accepted_at INTEGER
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_invite_token ON census_invitations(token_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_invite_pending ON census_invitations(identifier, grant_to, status)`,
 		// A step is spent once per subject, whatever partition's request presents the code, so the key
 		// is (subject, step) and partition is carried for the scoped clear DeleteSpentSteps performs.
 		`CREATE TABLE IF NOT EXISTS census_spent_steps (
@@ -254,113 +245,6 @@ func (s *SQLVaultStore) GetEmailVerificationByToken(ctx context.Context, tokenHa
 func (s *SQLVaultStore) MarkEmailVerificationConsumed(ctx context.Context, id string, consumedAt int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE census_email_verifications
 		SET consumed_at = COALESCE(consumed_at, ?) WHERE id = ?`, consumedAt, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// ── Invitations ──
-
-func (s *SQLVaultStore) PutInvitation(ctx context.Context, i *Invitation) error {
-	if i.ID == "" {
-		i.ID = randomID()
-	}
-	// One pending invitation per identifier + target; enforce before insert (partial-unique indexes are
-	// not portable across every driver, so the check + insert run in a transaction).
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM census_invitations
-		WHERE identifier = ? AND grant_to = ? AND status = 'pending'`, i.Identifier, i.GrantTo).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrConflict
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO census_invitations
-		(id, partition, identifier_enc, identifier, token_hash, grant_to, grant_type, grant_attrs, status,
-		created_at, expires_at, accepted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		i.ID, i.Partition, i.IdentifierEnc, i.Identifier, i.TokenHash, i.GrantTo, i.GrantType,
-		jsonStrMap(i.GrantAttrs), i.Status, tnanos(i.CreatedAt), ptrNanos(i.ExpiresAt), ptrNanos(i.AcceptedAt)); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-const invitationCols = `id, partition, identifier_enc, identifier, token_hash, grant_to, grant_type,
-	grant_attrs, status, created_at, expires_at, accepted_at`
-
-func scanInvitation(sc interface{ Scan(...any) error }) (*Invitation, error) {
-	var i Invitation
-	var attrs string
-	var created int64
-	var expires, accepted sql.NullInt64
-	if err := sc.Scan(&i.ID, &i.Partition, &i.IdentifierEnc, &i.Identifier, &i.TokenHash, &i.GrantTo,
-		&i.GrantType, &attrs, &i.Status, &created, &expires, &accepted); err != nil {
-		return nil, err
-	}
-	i.GrantAttrs = readStrMapJSON(attrs)
-	i.CreatedAt = fromNanos(created)
-	i.ExpiresAt = fromNullNanos(expires)
-	i.AcceptedAt = fromNullNanos(accepted)
-	return &i, nil
-}
-
-func (s *SQLVaultStore) GetInvitationByToken(ctx context.Context, tokenHash string) (*Invitation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+invitationCols+` FROM census_invitations
-		WHERE token_hash = ? LIMIT 1`, tokenHash)
-	i, err := scanInvitation(row)
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	return i, err
-}
-
-func (s *SQLVaultStore) GetPendingInvitation(ctx context.Context, identifierHash, grantTo string) (*Invitation, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT `+invitationCols+` FROM census_invitations
-		WHERE identifier = ? AND grant_to = ? AND status = 'pending' LIMIT 1`, identifierHash, grantTo)
-	i, err := scanInvitation(row)
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	return i, err
-}
-
-func (s *SQLVaultStore) ListInvitationsByPartition(ctx context.Context, partition, statusFilter string) ([]*Invitation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+invitationCols+` FROM census_invitations
-		WHERE (? <> '' AND partition = ?) AND (? = '' OR status = ?) ORDER BY created_at DESC`,
-		partition, partition, statusFilter, statusFilter)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*Invitation
-	for rows.Next() {
-		i, err := scanInvitation(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, i)
-	}
-	return out, rows.Err()
-}
-
-func (s *SQLVaultStore) UpdateInvitationStatus(ctx context.Context, id, status string, at int64) error {
-	set := `status = ?`
-	args := []any{status}
-	if status == "accepted" {
-		set += `, accepted_at = COALESCE(accepted_at, ?)`
-		args = append(args, at)
-	}
-	args = append(args, id)
-	res, err := s.db.ExecContext(ctx, `UPDATE census_invitations SET `+set+` WHERE id = ?`, args...)
 	if err != nil {
 		return err
 	}

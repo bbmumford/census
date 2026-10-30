@@ -9,11 +9,11 @@ import (
 var ErrNotFound = errors.New("census: not found")
 
 // ErrConflict is returned when a uniqueness constraint would be violated (a duplicate credential
-// identifier, or a second pending invitation for the same identifier + target).
+// identifier).
 var ErrConflict = errors.New("census: conflict")
 
 // VaultStore persists the account-feature records that carry secrets — credentials, email
-// verifications, invitations, and API keys. Only sealed material reaches it: encrypted emails,
+// verifications, and API keys. Only sealed material reaches it: encrypted emails,
 // deterministic identifier/token hashes, and Hasher-produced password digests. The Partition is opaque and
 // the store filters on it, never interprets it; an empty partition ("") on a partition-scoped read matches
 // NOTHING — the predicates read (? <> '' AND partition = ?), so an unscoped read returns no rows rather
@@ -34,14 +34,6 @@ type VaultStore interface {
 	PutEmailVerification(ctx context.Context, v *EmailVerification) error
 	GetEmailVerificationByToken(ctx context.Context, tokenHash string) (*EmailVerification, error)
 	MarkEmailVerificationConsumed(ctx context.Context, id string, consumedAt int64) error
-
-	// ── Invitations ──
-	PutInvitation(ctx context.Context, i *Invitation) error
-	GetInvitationByToken(ctx context.Context, tokenHash string) (*Invitation, error)
-	// GetPendingInvitation finds a still-pending invitation for an identifier hash + target (uniqueness).
-	GetPendingInvitation(ctx context.Context, identifierHash, grantTo string) (*Invitation, error)
-	ListInvitationsByPartition(ctx context.Context, partition, statusFilter string) ([]*Invitation, error)
-	UpdateInvitationStatus(ctx context.Context, id, status string, at int64) error
 
 	// ── Second-factor spent steps ──
 	// SpendStep records that a subject has spent one time step and reports whether this call is the

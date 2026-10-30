@@ -16,7 +16,6 @@ type MemStore struct {
 	mu            sync.Mutex
 	credentials   map[string]*Credential
 	verifications map[string]*EmailVerification
-	invitations   map[string]*Invitation
 	apiKeys       map[string]*APIKey
 	spentSteps    map[spentStep]spentRecord
 	newID         func() string
@@ -27,7 +26,6 @@ func NewMemStore() *MemStore {
 	return &MemStore{
 		credentials:   map[string]*Credential{},
 		verifications: map[string]*EmailVerification{},
-		invitations:   map[string]*Invitation{},
 		apiKeys:       map[string]*APIKey{},
 		spentSteps:    map[spentStep]spentRecord{},
 		newID:         randomID,
@@ -41,7 +39,7 @@ func randomID() string {
 }
 
 // partitionMatch reports whether a row held under partition `have` is visible to a
-// caller asking for partition `want`. Every credential, API-key, invitation and
+// caller asking for partition `want`. Every credential, API-key and
 // transfer lookup in this store filters through it.
 //
 // An empty `want` names no partition and matches nothing. SQLVaultStore answers
@@ -188,74 +186,6 @@ func (m *MemStore) MarkEmailVerificationConsumed(_ context.Context, id string, c
 	return nil
 }
 
-// ── Invitations ──
-
-func (m *MemStore) PutInvitation(_ context.Context, i *Invitation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// One pending invitation per identifier + target; a re-invite must revoke/expire the prior first.
-	for _, e := range m.invitations {
-		if e.Status == "pending" && e.Identifier == i.Identifier && e.GrantTo == i.GrantTo && e.ID != i.ID {
-			return ErrConflict
-		}
-	}
-	if i.ID == "" {
-		i.ID = m.newID()
-	}
-	m.invitations[i.ID] = cloneInvitation(i)
-	return nil
-}
-
-func (m *MemStore) GetInvitationByToken(_ context.Context, tokenHash string) (*Invitation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, i := range m.invitations {
-		if i.TokenHash == tokenHash {
-			return cloneInvitation(i), nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
-func (m *MemStore) GetPendingInvitation(_ context.Context, identifierHash, grantTo string) (*Invitation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, i := range m.invitations {
-		if i.Status == "pending" && i.Identifier == identifierHash && i.GrantTo == grantTo {
-			return cloneInvitation(i), nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
-func (m *MemStore) ListInvitationsByPartition(_ context.Context, partition, statusFilter string) ([]*Invitation, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var out []*Invitation
-	for _, i := range m.invitations {
-		if partitionMatch(partition, i.Partition) && (statusFilter == "" || i.Status == statusFilter) {
-			out = append(out, cloneInvitation(i))
-		}
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].CreatedAt.After(out[b].CreatedAt) })
-	return out, nil
-}
-
-func (m *MemStore) UpdateInvitationStatus(_ context.Context, id, status string, at int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	i, ok := m.invitations[id]
-	if !ok {
-		return ErrNotFound
-	}
-	i.Status = status
-	if status == "accepted" && i.AcceptedAt == nil {
-		t := fromUnixNano(at)
-		i.AcceptedAt = &t
-	}
-	return nil
-}
-
 // ── API keys ──
 
 func (m *MemStore) PutAPIKey(_ context.Context, k *APIKey) error {
@@ -345,14 +275,6 @@ func cloneVerification(v *EmailVerification) *EmailVerification {
 	cp := *v
 	cp.ExpiresAt = clonePtr(v.ExpiresAt)
 	cp.ConsumedAt = clonePtr(v.ConsumedAt)
-	return &cp
-}
-
-func cloneInvitation(i *Invitation) *Invitation {
-	cp := *i
-	cp.GrantAttrs = cloneStrMap(i.GrantAttrs)
-	cp.ExpiresAt = clonePtr(i.ExpiresAt)
-	cp.AcceptedAt = clonePtr(i.AcceptedAt)
 	return &cp
 }
 

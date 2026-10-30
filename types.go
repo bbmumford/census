@@ -4,8 +4,8 @@
 // edges, so census interprets no axis — "org", "team", "user" are opaque type strings the consumer
 // assigns, resolved but never understood (the loom relationship to its payload). The graph mechanics +
 // precedence resolution live in the companion nexus package; this package adds the concrete account
-// FEATURES that carry secrets and cannot be opaque graph attributes: credentials, email verification,
-// invitations, and API keys. Those reuse the proven crypto seam — a secret is encrypted at rest behind
+// FEATURES that carry secrets and cannot be opaque graph attributes: credentials, email verification
+// and API keys. Those reuse the proven crypto seam — a secret is encrypted at rest behind
 // an injected Encryptor with a separate deterministic hash for lookup/uniqueness, and raw tokens are
 // minted once and stored only as hashes. The partition-scope is opaque; times are time.Time; a nil
 // *time.Time means "not yet".
@@ -42,26 +42,6 @@ type EmailVerification struct {
 	CreatedAt     time.Time
 	ExpiresAt     *time.Time
 	ConsumedAt    *time.Time
-}
-
-// Invitation invites an email to receive a relationship on acceptance. The email is encrypted at rest
-// with a deterministic hash for lookup/uniqueness-per-target; the token is stored only as a hash. The
-// grant is described opaquely — GrantTo is the target entity id and GrantType the edge type to create
-// in the graph on accept (e.g. a "member" edge onto an org), with GrantAttrs (e.g. a role) — census
-// never interprets these; the accept step hands them to the graph.
-type Invitation struct {
-	ID            string
-	Partition         string // opaque partition-scope
-	IdentifierEnc string // encrypted invitee email
-	Identifier    string // deterministic hash of the normalized email (lookup)
-	TokenHash     string // hash of the raw invite token
-	GrantTo       string // opaque target entity id the acceptance relates the invitee to
-	GrantType     string // opaque edge type to create on accept
-	GrantAttrs    map[string]string
-	Status        string // "pending" | "accepted" | "revoked"
-	CreatedAt     time.Time
-	ExpiresAt     *time.Time
-	AcceptedAt    *time.Time
 }
 
 // APIKey is a non-interactive credential. The raw key is minted once and stored only as a hash; a

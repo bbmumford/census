@@ -12,10 +12,10 @@ type configError struct{ msg string }
 func (e *configError) Error() string { return e.msg }
 
 // Service is the account-features façade: it owns the crypto seam over a VaultStore and exposes the
-// reusable operations (register a credential, authenticate, issue + consume email verifications and
-// invitations, mint + verify API keys). It interprets no axis — Partition and Subject are opaque graph
-// ids the consumer assigns. The relationship graph (memberships, roles, org hierarchy) is the nexus
-// store's concern; a consumer wires the accepted invitation's opaque grant into nexus itself.
+// reusable operations (register a credential, authenticate, issue + consume email verifications,
+// mint + verify API keys). It interprets no axis — Partition and Subject are opaque graph ids the
+// consumer assigns. The relationship graph (memberships, roles, org hierarchy) is the nexus store's
+// concern.
 type Service struct {
 	store    VaultStore
 	enc      Encryptor
@@ -32,7 +32,7 @@ type Config struct {
 	Encryptor Encryptor
 	Hasher    Hasher
 	Now       func() time.Time
-	// NewToken mints a raw invitation/verification token; NewKey mints a raw API key. Both default to
+	// NewToken mints a raw verification token; NewKey mints a raw API key. Both default to
 	// 32 random bytes hex and are injectable for tests.
 	NewToken func() string
 	NewKey   func() string
@@ -44,7 +44,7 @@ func NewService(c Config) (*Service, error) {
 		return nil, &configError{"census: Config.Store is required"}
 	}
 	if c.Encryptor == nil {
-		return nil, &configError{"census: Config.Encryptor is required (invitee/verification email must be encrypted at rest)"}
+		return nil, &configError{"census: Config.Encryptor is required (verification email must be encrypted at rest)"}
 	}
 	if c.Hasher == nil {
 		return nil, &configError{"census: Config.Hasher is required (passwords must never be stored in the clear)"}
@@ -66,7 +66,7 @@ func NewService(c Config) (*Service, error) {
 // wrong — the two are indistinguishable to the caller so a probe cannot enumerate identifiers.
 var ErrInvalidCredential = errors.New("census: invalid credential")
 
-// ErrExpired is returned when a token or invitation has passed its expiry.
+// ErrExpired is returned when a token has passed its expiry.
 var ErrExpired = errors.New("census: expired")
 
 // ── Credentials ──
@@ -188,71 +188,6 @@ func (s *Service) ConfirmEmailAddress(ctx context.Context, email, rawToken strin
 		return "", err
 	}
 	return v.Subject, nil
-}
-
-// ── Invitations ──
-
-// Invite creates a pending invitation for an email to receive an opaque grant (a graph edge of
-// grantType onto grantTo, with grantAttrs) on acceptance. The email is encrypted at rest with a
-// deterministic hash; the raw token is returned once for the invite link. A still-pending invitation
-// for the same email + target returns ErrConflict.
-func (s *Service) Invite(ctx context.Context, partition, email, grantTo, grantType string, grantAttrs map[string]string, ttl time.Duration) (rawToken string, inv *Invitation, err error) {
-	email = normalizeEmail(email)
-	if email == "" {
-		return "", nil, errors.New("census: empty email")
-	}
-	ciphertext, err := s.enc.Encrypt(email)
-	if err != nil {
-		return "", nil, err
-	}
-	rawToken = s.newToken()
-	now := s.now()
-	inv = &Invitation{
-		Partition:         partition,
-		IdentifierEnc: ciphertext,
-		Identifier:    hashHex(email),
-		TokenHash:     hashHex(rawToken),
-		GrantTo:       grantTo,
-		GrantType:     grantType,
-		GrantAttrs:    grantAttrs,
-		Status:        "pending",
-		CreatedAt:     now,
-	}
-	if ttl > 0 {
-		exp := now.Add(ttl)
-		inv.ExpiresAt = &exp
-	}
-	if err := s.store.PutInvitation(ctx, inv); err != nil {
-		return "", nil, err
-	}
-	return rawToken, inv, nil
-}
-
-// AcceptInvitation consumes a raw invite token, marks the invitation accepted, and returns it so the
-// consumer can create the opaque grant edge (GrantTo/GrantType/GrantAttrs) in the nexus graph. census
-// records the acceptance but does not touch the graph — the consumer owns that write, keeping census
-// axis-blind. An expired or already-resolved invitation returns ErrExpired.
-func (s *Service) AcceptInvitation(ctx context.Context, rawToken string) (*Invitation, error) {
-	inv, err := s.store.GetInvitationByToken(ctx, hashHex(rawToken))
-	if err != nil {
-		return nil, err
-	}
-	now := s.now()
-	if inv.Status != "pending" || (inv.ExpiresAt != nil && now.After(*inv.ExpiresAt)) {
-		return nil, ErrExpired
-	}
-	if err := s.store.UpdateInvitationStatus(ctx, inv.ID, "accepted", now.UnixNano()); err != nil {
-		return nil, err
-	}
-	inv.Status = "accepted"
-	acc := now
-	inv.AcceptedAt = &acc
-	return inv, nil
-}
-
-// RevokeInvitation cancels a pending invitation so its token can no longer be accepted.
-func (s *Service) RevokeInvitation(ctx context.Context, id string) error {
-	return s.store.UpdateInvitationStatus(ctx, id, "revoked", s.now().UnixNano())
 }
 
 // ── API keys ──
