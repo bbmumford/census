@@ -2,6 +2,7 @@ package census
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -23,9 +24,34 @@ type plainHasher struct{}
 func (plainHasher) Hash(p string) (string, error) { return "h:" + p, nil }
 func (plainHasher) Compare(digest, p string) bool { return digest == "h:"+p }
 
+// fakeCodes is a test EmailCodeSigner (NOT for production): the code is the facts as JSON behind a
+// fixed tag, refused when the tag is missing, the JSON does not parse, or now is past its expiry. It
+// stands in for the consumer's MAC so these cases exercise the service's own rules.
+type fakeCodes struct{}
+
+func (fakeCodes) SignEmailCode(c EmailCode) (string, error) {
+	b, err := json.Marshal(c)
+	return "code:" + string(b), err
+}
+
+func (fakeCodes) OpenEmailCode(code string, now time.Time) (EmailCode, error) {
+	var c EmailCode
+	body, ok := strings.CutPrefix(code, "code:")
+	if !ok {
+		return EmailCode{}, errors.New("not a code")
+	}
+	if err := json.Unmarshal([]byte(body), &c); err != nil {
+		return EmailCode{}, err
+	}
+	if now.After(c.ExpiresAt) {
+		return EmailCode{}, errors.New("expired")
+	}
+	return c, nil
+}
+
 func newServiceWith(t *testing.T, store VaultStore) *Service {
 	t.Helper()
-	svc, err := NewService(Config{Store: store, Encryptor: revEncryptor{}, Hasher: plainHasher{}})
+	svc, err := NewService(Config{Store: store, Encryptor: revEncryptor{}, Hasher: plainHasher{}, Codes: fakeCodes{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +65,7 @@ func TestConfig_RequiresSeams(t *testing.T) {
 		t.Fatal("a nil Store must be rejected")
 	}
 	if _, err := NewService(Config{Store: NewMemStore(), Hasher: plainHasher{}}); err == nil {
-		t.Fatal("a nil Encryptor must be rejected — email must be encrypted at rest")
+		t.Fatal("a nil Encryptor must be rejected — second-factor secrets must be encrypted at rest")
 	}
 	if _, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}}); err == nil {
 		t.Fatal("a nil Hasher must be rejected — passwords must never be stored in the clear")
@@ -100,13 +126,53 @@ func TestEmailVerification_ConfirmOnceAndExpiry(t *testing.T) {
 		if _, err := s.ConfirmEmail(ctx, tok); !errors.Is(err, ErrExpired) {
 			t.Fatal("a consumed token must not confirm again")
 		}
-		// expiry
+		// expiry: the signer refuses a code past its expiry, which is ErrNotFound as any code that
+		// does not open is
 		tok2, _ := s.IssueEmailVerification(ctx, "acme", "user-1", "b2@x.com", time.Minute)
 		fixedClock(s, now.Add(2*time.Minute))
-		if _, err := s.ConfirmEmail(ctx, tok2); !errors.Is(err, ErrExpired) {
-			t.Fatal("an expired token must be ErrExpired")
+		if _, err := s.ConfirmEmail(ctx, tok2); !errors.Is(err, ErrNotFound) {
+			t.Fatal("an expired code must not confirm")
+		}
+		if _, err := s.IssueEmailVerification(ctx, "acme", "user-1", "b3@x.com", 0); err == nil {
+			t.Fatal("a code with no lifetime was issued")
 		}
 	})
+}
+
+// A used code's id is kept until the code's own expiry and then deleted: the entry is pruned on the
+// next spend after that expiry, so the list holds only codes whose signature still opens.
+func TestSpentEmailCodesArePrunedAfterTheirExpiry(t *testing.T) {
+	eachVault(t, func(t *testing.T, store VaultStore) {
+		now := time.Unix(1_000_000, 0).UTC()
+		exp := now.Add(15 * time.Minute).UnixNano()
+		if first, err := store.SpendEmailCode(ctx, "c1", exp, now.UnixNano()); err != nil || !first {
+			t.Fatalf("first spend = %v, %v", first, err)
+		}
+		if first, err := store.SpendEmailCode(ctx, "c1", exp, now.Add(time.Minute).UnixNano()); err != nil || first {
+			t.Fatalf("second spend before expiry = %v, %v; want refused", first, err)
+		}
+		later := now.Add(16 * time.Minute).UnixNano()
+		if first, err := store.SpendEmailCode(ctx, "c2", later+int64(time.Minute), later); err != nil || !first {
+			t.Fatalf("a spend after c1's expiry = %v, %v", first, err)
+		}
+		if first, err := store.SpendEmailCode(ctx, "c1", later+int64(time.Minute), later); err != nil || !first {
+			t.Fatalf("c1 after its expiry = %v, %v; want its entry pruned", first, err)
+		}
+	})
+}
+
+// A Service with no code signer issues and redeems no code, and says so.
+func TestEmailCodesNeedASigner(t *testing.T) {
+	s, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.IssueEmailVerification(ctx, "acme", "user-1", "b@x.com", time.Hour); !errors.Is(err, ErrNoEmailCodes) {
+		t.Fatalf("issue = %v, want ErrNoEmailCodes", err)
+	}
+	if _, err := s.ConfirmEmail(ctx, "code:{}"); !errors.Is(err, ErrNoEmailCodes) {
+		t.Fatalf("confirm = %v, want ErrNoEmailCodes", err)
+	}
 }
 
 func TestAPIKey_MintVerifyRevoke(t *testing.T) {

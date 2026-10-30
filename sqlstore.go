@@ -34,13 +34,12 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 		// The login identifier is unique per credential kind — a second subject cannot claim it.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_census_cred_identity ON census_credentials(kind, identifier_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_census_cred_subject ON census_credentials(partition, subject)`,
-		`CREATE TABLE IF NOT EXISTS census_email_verifications (
-			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
-			identifier_enc TEXT NOT NULL DEFAULT '', identifier TEXT NOT NULL DEFAULT '',
-			token_hash TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0,
-			expires_at INTEGER, consumed_at INTEGER
+		// An email code is signed, not stored; only the id of one already used is kept, until the
+		// code's expiry, so SpendEmailCode refuses it a second time.
+		`CREATE TABLE IF NOT EXISTS census_spent_email_codes (
+			id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_census_verify_token ON census_email_verifications(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_census_spent_code_expiry ON census_spent_email_codes(expires_at)`,
 		// A step is spent once per subject, whatever partition's request presents the code, so the key
 		// is (subject, step) and partition is carried for the scoped clear DeleteSpentSteps performs.
 		`CREATE TABLE IF NOT EXISTS census_spent_steps (
@@ -200,51 +199,6 @@ func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, partition,
 func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM census_credentials WHERE id = ? AND (? <> '' AND partition = ?)`,
 		id, partition, partition)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// ── Email verifications ──
-
-func (s *SQLVaultStore) PutEmailVerification(ctx context.Context, v *EmailVerification) error {
-	if v.ID == "" {
-		v.ID = randomID()
-	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO census_email_verifications
-		(id, partition, subject, identifier_enc, identifier, token_hash, created_at, expires_at, consumed_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`,
-		v.ID, v.Partition, v.Subject, v.IdentifierEnc, v.Identifier, v.TokenHash, tnanos(v.CreatedAt),
-		ptrNanos(v.ExpiresAt), ptrNanos(v.ConsumedAt))
-	return err
-}
-
-func (s *SQLVaultStore) GetEmailVerificationByToken(ctx context.Context, tokenHash string) (*EmailVerification, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, partition, subject, identifier_enc, identifier, token_hash,
-		created_at, expires_at, consumed_at FROM census_email_verifications WHERE token_hash = ? LIMIT 1`, tokenHash)
-	var v EmailVerification
-	var created int64
-	var expires, consumed sql.NullInt64
-	if err := row.Scan(&v.ID, &v.Partition, &v.Subject, &v.IdentifierEnc, &v.Identifier, &v.TokenHash,
-		&created, &expires, &consumed); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	v.CreatedAt = fromNanos(created)
-	v.ExpiresAt = fromNullNanos(expires)
-	v.ConsumedAt = fromNullNanos(consumed)
-	return &v, nil
-}
-
-func (s *SQLVaultStore) MarkEmailVerificationConsumed(ctx context.Context, id string, consumedAt int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE census_email_verifications
-		SET consumed_at = COALESCE(consumed_at, ?) WHERE id = ?`, consumedAt, id)
 	if err != nil {
 		return err
 	}

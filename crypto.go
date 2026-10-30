@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// Encryptor encrypts a secret (an email address) for storage and decrypts it just-in-time. A
-// deployment holding real PII wires AES-GCM or an envelope KEK; the account-feature services require a
-// non-nil Encryptor — verification emails must be encrypted at rest, never stored in the
+// Encryptor encrypts a secret (a second-factor secret) for storage and decrypts it just-in-time. A
+// deployment holding real secrets wires AES-GCM or an envelope KEK; the account-feature services
+// require a non-nil Encryptor — a second-factor secret must be encrypted at rest, never stored in the
 // clear. This is the same seam the pharos subscriber layer proved.
 type Encryptor interface {
 	Encrypt(plaintext string) (string, error)

@@ -15,7 +15,7 @@ import (
 type MemStore struct {
 	mu            sync.Mutex
 	credentials   map[string]*Credential
-	verifications map[string]*EmailVerification
+	spentCodes    map[string]int64
 	apiKeys       map[string]*APIKey
 	spentSteps    map[spentStep]spentRecord
 	newID         func() string
@@ -25,7 +25,7 @@ type MemStore struct {
 func NewMemStore() *MemStore {
 	return &MemStore{
 		credentials:   map[string]*Credential{},
-		verifications: map[string]*EmailVerification{},
+		spentCodes:    map[string]int64{},
 		apiKeys:       map[string]*APIKey{},
 		spentSteps:    map[spentStep]spentRecord{},
 		newID:         randomID,
@@ -149,41 +149,23 @@ func (m *MemStore) DeleteSpentSteps(_ context.Context, partition, subject string
 	return nil
 }
 
-// ── Email verifications ──
+// ── Spent email codes ──
 
-func (m *MemStore) PutEmailVerification(_ context.Context, v *EmailVerification) error {
+// SpendEmailCode holds the lock across the prune, the read and the write, for the reason SpendStep
+// does.
+func (m *MemStore) SpendEmailCode(_ context.Context, id string, expiresAt, now int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if v.ID == "" {
-		v.ID = m.newID()
-	}
-	m.verifications[v.ID] = cloneVerification(v)
-	return nil
-}
-
-func (m *MemStore) GetEmailVerificationByToken(_ context.Context, tokenHash string) (*EmailVerification, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, v := range m.verifications {
-		if v.TokenHash == tokenHash {
-			return cloneVerification(v), nil
+	for k, exp := range m.spentCodes {
+		if exp < now {
+			delete(m.spentCodes, k)
 		}
 	}
-	return nil, ErrNotFound
-}
-
-func (m *MemStore) MarkEmailVerificationConsumed(_ context.Context, id string, consumedAt int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	v, ok := m.verifications[id]
-	if !ok {
-		return ErrNotFound
+	if _, seen := m.spentCodes[id]; seen {
+		return false, nil
 	}
-	if v.ConsumedAt == nil {
-		t := fromUnixNano(consumedAt)
-		v.ConsumedAt = &t
-	}
-	return nil
+	m.spentCodes[id] = expiresAt
+	return true, nil
 }
 
 // ── API keys ──
@@ -270,13 +252,6 @@ func cloneStrMap(m map[string]string) map[string]string {
 }
 
 func cloneCredential(c *Credential) *Credential { cp := *c; return &cp }
-
-func cloneVerification(v *EmailVerification) *EmailVerification {
-	cp := *v
-	cp.ExpiresAt = clonePtr(v.ExpiresAt)
-	cp.ConsumedAt = clonePtr(v.ConsumedAt)
-	return &cp
-}
 
 func cloneAPIKey(k *APIKey) *APIKey {
 	cp := *k

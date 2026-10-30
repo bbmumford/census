@@ -12,8 +12,8 @@ var ErrNotFound = errors.New("census: not found")
 // identifier).
 var ErrConflict = errors.New("census: conflict")
 
-// VaultStore persists the account-feature records that carry secrets — credentials, email
-// verifications, and API keys. Only sealed material reaches it: encrypted emails,
+// VaultStore persists the account-feature records that carry secrets — credentials, the ids of spent
+// email codes, and API keys. Only sealed material reaches it: encrypted second-factor secrets,
 // deterministic identifier/token hashes, and Hasher-produced password digests. The Partition is opaque and
 // the store filters on it, never interprets it; an empty partition ("") on a partition-scoped read matches
 // NOTHING — the predicates read (? <> '' AND partition = ?), so an unscoped read returns no rows rather
@@ -30,10 +30,13 @@ type VaultStore interface {
 	ListCredentialsBySubject(ctx context.Context, partition, subject string) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, partition, id string) error
 
-	// ── Email verifications ──
-	PutEmailVerification(ctx context.Context, v *EmailVerification) error
-	GetEmailVerificationByToken(ctx context.Context, tokenHash string) (*EmailVerification, error)
-	MarkEmailVerificationConsumed(ctx context.Context, id string, consumedAt int64) error
+	// ── Spent email codes ──
+	// SpendEmailCode records that the email code id is used and reports whether this call is the
+	// first to record it. It MUST be atomic against a concurrent call for the same id, for the reason
+	// SpendStep is. expiresAt is the code's expiry and now the instant of use, both Unix nanoseconds;
+	// every call first deletes the entries whose expiry is before now, since the code's signature
+	// refuses it from then on and its entry has nothing left to refuse.
+	SpendEmailCode(ctx context.Context, id string, expiresAt, now int64) (first bool, err error)
 
 	// ── Second-factor spent steps ──
 	// SpendStep records that a subject has spent one time step and reports whether this call is the

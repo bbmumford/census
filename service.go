@@ -12,7 +12,7 @@ type configError struct{ msg string }
 func (e *configError) Error() string { return e.msg }
 
 // Service is the account-features façade: it owns the crypto seam over a VaultStore and exposes the
-// reusable operations (register a credential, authenticate, issue + consume email verifications,
+// reusable operations (register a credential, authenticate, issue + redeem email codes,
 // mint + verify API keys). It interprets no axis — Partition and Subject are opaque graph ids the
 // consumer assigns. The relationship graph (memberships, roles, org hierarchy) is the nexus store's
 // concern.
@@ -20,6 +20,7 @@ type Service struct {
 	store    VaultStore
 	enc      Encryptor
 	hasher   Hasher
+	codes    EmailCodeSigner
 	now      func() time.Time
 	newToken func() string
 	newKey   func() string
@@ -31,8 +32,12 @@ type Config struct {
 	Store     VaultStore
 	Encryptor Encryptor
 	Hasher    Hasher
-	Now       func() time.Time
-	// NewToken mints a raw verification token; NewKey mints a raw API key. Both default to
+	// Codes signs and opens the email codes IssueEmailVerification, ConfirmEmail and
+	// ConfirmEmailAddress serve. It is optional: a Service without it answers those three
+	// ErrNoEmailCodes and serves everything else.
+	Codes EmailCodeSigner
+	Now   func() time.Time
+	// NewToken mints an email code's id; NewKey mints a raw API key. Both default to
 	// 32 random bytes hex and are injectable for tests.
 	NewToken func() string
 	NewKey   func() string
@@ -44,12 +49,12 @@ func NewService(c Config) (*Service, error) {
 		return nil, &configError{"census: Config.Store is required"}
 	}
 	if c.Encryptor == nil {
-		return nil, &configError{"census: Config.Encryptor is required (verification email must be encrypted at rest)"}
+		return nil, &configError{"census: Config.Encryptor is required (second-factor secrets must be encrypted at rest)"}
 	}
 	if c.Hasher == nil {
 		return nil, &configError{"census: Config.Hasher is required (passwords must never be stored in the clear)"}
 	}
-	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, now: c.Now, newToken: c.NewToken, newKey: c.NewKey}
+	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, codes: c.Codes, now: c.Now, newToken: c.NewToken, newKey: c.NewKey}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -113,81 +118,95 @@ func (s *Service) Authenticate(ctx context.Context, identifier, password string)
 
 // ── Email verification ──
 
-// IssueEmailVerification mints a raw verification token for a subject's email and stores the challenge
-// (email encrypted at rest + deterministic hash, token stored only as a hash). The RAW token is
-// returned once for the confirmation link and is never recoverable from the store.
+// ErrNoEmailCodes is what IssueEmailVerification, ConfirmEmail and ConfirmEmailAddress answer on a
+// Service built with no Config.Codes: a code can be neither signed nor opened, and nothing is stored to
+// fall back on.
+var ErrNoEmailCodes = errors.New("census: no email code signer configured")
+
+// IssueEmailVerification signs an email code for a subject's address that expires ttl from now, through
+// Config.Codes. Nothing is stored: the code carries its id, its partition and subject, the address's
+// deterministic hash and its expiry, and the RAW code returned is the only copy. ttl must be positive,
+// because the spent list deletes a used code's id at its expiry and a code with none would be spendable
+// again once that happened.
 func (s *Service) IssueEmailVerification(ctx context.Context, partition, subject, email string, ttl time.Duration) (rawToken string, err error) {
+	if s.codes == nil {
+		return "", ErrNoEmailCodes
+	}
 	email = normalizeEmail(email)
 	if email == "" {
 		return "", errors.New("census: empty email")
 	}
-	ciphertext, err := s.enc.Encrypt(email)
-	if err != nil {
-		return "", err
+	if ttl <= 0 {
+		return "", errors.New("census: an email code needs a positive lifetime")
 	}
-	rawToken = s.newToken()
-	now := s.now()
-	v := &EmailVerification{
-		Partition:         partition,
-		Subject:       subject,
-		IdentifierEnc: ciphertext,
-		Identifier:    hashHex(email),
-		TokenHash:     hashHex(rawToken),
-		CreatedAt:     now,
-	}
-	if ttl > 0 {
-		exp := now.Add(ttl)
-		v.ExpiresAt = &exp
-	}
-	if err := s.store.PutEmailVerification(ctx, v); err != nil {
-		return "", err
-	}
-	return rawToken, nil
+	return s.codes.SignEmailCode(EmailCode{
+		ID:         s.newToken(),
+		Partition:  partition,
+		Subject:    subject,
+		Identifier: hashHex(email),
+		ExpiresAt:  s.now().Add(ttl),
+	})
 }
 
-// ConfirmEmail consumes a raw verification token and returns the verified subject id. A consumed or
-// expired challenge returns ErrExpired; an unknown token returns ErrNotFound.
+// ConfirmEmail redeems a raw email code and returns the subject it was issued for. A code that does not
+// open (forged, tampered or expired) is ErrNotFound; one already redeemed is ErrExpired.
 func (s *Service) ConfirmEmail(ctx context.Context, rawToken string) (subject string, err error) {
-	v, err := s.store.GetEmailVerificationByToken(ctx, hashHex(rawToken))
+	c, err := s.openEmailCode(rawToken)
 	if err != nil {
 		return "", err
 	}
-	now := s.now()
-	if v.ConsumedAt != nil || (v.ExpiresAt != nil && now.After(*v.ExpiresAt)) {
-		return "", ErrExpired
-	}
-	if err := s.store.MarkEmailVerificationConsumed(ctx, v.ID, now.UnixNano()); err != nil {
+	if err := s.spendEmailCode(ctx, c); err != nil {
 		return "", err
 	}
-	return v.Subject, nil
+	return c.Subject, nil
 }
 
-// ConfirmEmailAddress consumes a raw verification token issued for email and
-// returns the subject it was issued for, which is "" for a code issued to an
-// address no subject holds (a first-time address a sign-up founds). A token
-// issued for another address is ErrNotFound and is not consumed, so a code is
-// redeemed only together with the address it was sent to. A consumed or expired
-// token is ErrExpired; an unknown token is ErrNotFound.
+// ConfirmEmailAddress redeems a raw email code issued for email and returns the subject it was issued
+// for, which is "" for a code issued to an address no subject holds (a first-time address a sign-up
+// founds). A code issued for another address is ErrNotFound and is not spent, so a code is redeemed
+// only together with the address it was sent to. A code that does not open is ErrNotFound; one already
+// redeemed is ErrExpired.
 func (s *Service) ConfirmEmailAddress(ctx context.Context, email, rawToken string) (subject string, err error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return "", ErrNotFound
 	}
-	v, err := s.store.GetEmailVerificationByToken(ctx, hashHex(rawToken))
+	c, err := s.openEmailCode(rawToken)
 	if err != nil {
 		return "", err
 	}
-	if v.Identifier != hashHex(email) {
+	if c.Identifier != hashHex(email) {
 		return "", ErrNotFound
 	}
-	now := s.now()
-	if v.ConsumedAt != nil || (v.ExpiresAt != nil && now.After(*v.ExpiresAt)) {
-		return "", ErrExpired
-	}
-	if err := s.store.MarkEmailVerificationConsumed(ctx, v.ID, now.UnixNano()); err != nil {
+	if err := s.spendEmailCode(ctx, c); err != nil {
 		return "", err
 	}
-	return v.Subject, nil
+	return c.Subject, nil
+}
+
+// openEmailCode opens a raw code at the service's clock: ErrNoEmailCodes with no signer, ErrNotFound for
+// any code the signer refuses.
+func (s *Service) openEmailCode(rawToken string) (EmailCode, error) {
+	if s.codes == nil {
+		return EmailCode{}, ErrNoEmailCodes
+	}
+	c, err := s.codes.OpenEmailCode(rawToken, s.now())
+	if err != nil || c.ID == "" {
+		return EmailCode{}, ErrNotFound
+	}
+	return c, nil
+}
+
+// spendEmailCode puts an opened code's id on the spent list, ErrExpired when it is already there.
+func (s *Service) spendEmailCode(ctx context.Context, c EmailCode) error {
+	first, err := s.store.SpendEmailCode(ctx, c.ID, c.ExpiresAt.UnixNano(), s.now().UnixNano())
+	if err != nil {
+		return err
+	}
+	if !first {
+		return ErrExpired
+	}
+	return nil
 }
 
 // ── API keys ──
