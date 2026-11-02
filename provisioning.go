@@ -16,6 +16,34 @@ type ProviderIdentity struct {
 	ProviderUserID string // the provider's stable user id (an OAuth "sub")
 	Email          string // opaque; stored as a subject attr, never interpreted
 	Name           string
+	// EmailVerified is whether the provider marked Email verified. Found
+	// records it on the identity edge it writes (IdentityEmailVerifiedAttr).
+	EmailVerified bool
+}
+
+// IdentityEmailAttr and IdentityEmailVerifiedAttr are the attributes Found
+// writes on the identity edge it creates (subject -[identity:<provider>]->
+// provider user id): the address the provider's profile asserted, as given, and
+// "true" when the provider marked that address verified. They record which
+// provider asserted which address, which the subject's email attribute does
+// not, so a consumer deciding whether a subject proved an address reads them
+// from the edge. An identity with no address carries neither.
+const (
+	IdentityEmailAttr         = "email"
+	IdentityEmailVerifiedAttr = "email_verified"
+)
+
+// identityEdgeAttrs are the identity edge's attributes for identity, nil when
+// it carries no address.
+func identityEdgeAttrs(identity ProviderIdentity) map[string]string {
+	if identity.Email == "" {
+		return nil
+	}
+	attrs := map[string]string{IdentityEmailAttr: identity.Email}
+	if identity.EmailVerified {
+		attrs[IdentityEmailVerifiedAttr] = "true"
+	}
+	return attrs
 }
 
 // PartitionAssigner is the onboarding policy for a FIRST-TIME subject: it returns
@@ -223,7 +251,7 @@ func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, part
 			return fmt.Errorf("census: create subject: %w", err)
 		}
 		meta := ChangeMeta{Partition: partition, Trigger: "found", Source: identity.Provider}
-		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, nil, meta); err != nil {
+		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, identityEdgeAttrs(identity), meta); err != nil {
 			return fmt.Errorf("census: grant identity edge: %w", err)
 		}
 		if err := tx.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {

@@ -29,6 +29,38 @@ func TestFoundCreatesSubjectIdentityAndPartitionTogether(t *testing.T) {
 	}
 }
 
+// The identity edge Found writes records the address the provider asserted and,
+// only when the provider marked it verified, IdentityEmailVerifiedAttr; an
+// identity with no address carries neither attribute.
+func TestFoundRecordsTheProvidersAddressOnTheIdentityEdge(t *testing.T) {
+	deny := func(context.Context, ProviderIdentity, string) (string, error) {
+		return "", errors.New("sign-in founds nothing")
+	}
+	p, g := newProvisioner(t, deny)
+	for _, c := range []struct {
+		id         ProviderIdentity
+		wantEmail  string
+		wantMarked string
+	}{
+		{ProviderIdentity{Provider: "google", ProviderUserID: "g-v", Email: "V@Example.com", EmailVerified: true}, "V@Example.com", "true"},
+		{ProviderIdentity{Provider: "google", ProviderUserID: "g-u", Email: "u@example.com"}, "u@example.com", ""},
+		{ProviderIdentity{Provider: "github", ProviderUserID: "gh-n"}, "", ""},
+	} {
+		subject, _, err := p.Found(ctx, c.id, "")
+		if err != nil {
+			t.Fatalf("Found(%s): %v", c.id.ProviderUserID, err)
+		}
+		edges, err := g.OutEdges(ctx, subject, "identity:"+c.id.Provider)
+		if err != nil || len(edges) != 1 || edges[0].To != c.id.ProviderUserID {
+			t.Fatalf("%s: identity edges = %v, %v", c.id.ProviderUserID, edges, err)
+		}
+		attrs := edges[0].Attrs
+		if attrs[IdentityEmailAttr] != c.wantEmail || attrs[IdentityEmailVerifiedAttr] != c.wantMarked {
+			t.Errorf("%s: identity edge attrs = %v, want email %q verified %q", c.id.ProviderUserID, attrs, c.wantEmail, c.wantMarked)
+		}
+	}
+}
+
 // An identity a subject already holds is ErrIdentityHeld and Found writes
 // nothing, so a replayed founding creates no second account.
 func TestFoundRefusesAnIdentityAlreadyHeld(t *testing.T) {
