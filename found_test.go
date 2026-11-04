@@ -116,3 +116,47 @@ func TestConfirmEmailAddressBindsTheCodeToItsAddress(t *testing.T) {
 		t.Fatalf("held address = %q, %v; want user-1", subject, err)
 	}
 }
+
+// An address the provider marked verified joins the founded subject's emailed-code
+// sign-in; an unmarked one does not, and an address another subject already signs
+// in with stays that subject's alone.
+func TestFoundAttachesOnlyAVerifiedUnheldAddress(t *testing.T) {
+	deny := func(context.Context, ProviderIdentity, string) (string, error) {
+		return "", errors.New("sign-in founds nothing")
+	}
+	p, g := newProvisioner(t, deny)
+	holders := func(address string) []string {
+		t.Helper()
+		edges, err := g.InEdges(ctx, address, emailIdentityEdge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(edges))
+		for _, e := range edges {
+			out = append(out, e.From)
+		}
+		return out
+	}
+
+	verified, _, err := p.Found(ctx, ProviderIdentity{Provider: "google", ProviderUserID: "g-1", Email: " V@Example.com", EmailVerified: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := holders("v@example.com"); len(got) != 1 || got[0] != verified {
+		t.Fatalf("verified address held by %v, want %s alone", got, verified)
+	}
+
+	if _, _, err := p.Found(ctx, ProviderIdentity{Provider: "google", ProviderUserID: "g-2", Email: "u@example.com"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := holders("u@example.com"); len(got) != 0 {
+		t.Errorf("an unmarked address is held by %v", got)
+	}
+
+	if _, _, err := p.Found(ctx, ProviderIdentity{Provider: "microsoftonline", ProviderUserID: "m-1", Email: "v@example.com", EmailVerified: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := holders("v@example.com"); len(got) != 1 || got[0] != verified {
+		t.Errorf("a held address is now held by %v, want %s alone", got, verified)
+	}
+}

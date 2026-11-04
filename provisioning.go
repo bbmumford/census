@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/bbmumford/nexus"
 )
@@ -32,6 +33,22 @@ const (
 	IdentityEmailAttr         = "email"
 	IdentityEmailVerifiedAttr = "email_verified"
 )
+
+// emailIdentityEdge is the edge a subject holds to an address it signs in by
+// emailed code with (subject -[identity:email]-> the address, lower-cased): the
+// identity edge EnsureUser and Found write for a provider named "email".
+const emailIdentityEdge = "identity:email"
+
+// verifiedAddressToAttach is the address Found attaches as emailIdentityEdge for
+// a provider's identity: the address lower-cased and trimmed when the provider
+// marked it verified, empty when it did not, when it names no address, and for
+// the email provider, whose own identity edge is that edge.
+func verifiedAddressToAttach(identity ProviderIdentity) string {
+	if !identity.EmailVerified || identity.Provider == "email" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(identity.Email))
+}
 
 // identityEdgeAttrs are the identity edge's attributes for identity, nil when
 // it carries no address.
@@ -253,6 +270,21 @@ func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, part
 		meta := ChangeMeta{Partition: partition, Trigger: "found", Source: identity.Provider}
 		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, identityEdgeAttrs(identity), meta); err != nil {
 			return fmt.Errorf("census: grant identity edge: %w", err)
+		}
+		// A verified address joins the subject's emailed-code sign-in, so that
+		// person's later code reaches this account and not a second founding. An
+		// address another subject holds stays theirs: a code consumer answers
+		// nothing for an address two subjects hold, which would lock the holder out.
+		if address := verifiedAddressToAttach(identity); address != "" {
+			holders, err := tx.InEdges(ctx, address, emailIdentityEdge)
+			if err != nil {
+				return fmt.Errorf("census: lookup address: %w", err)
+			}
+			if len(holders) == 0 {
+				if err := tx.Grant(ctx, subject, address, emailIdentityEdge, nil, meta); err != nil {
+					return fmt.Errorf("census: grant address edge: %w", err)
+				}
+			}
 		}
 		if err := tx.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
 			return fmt.Errorf("census: grant membership: %w", err)
