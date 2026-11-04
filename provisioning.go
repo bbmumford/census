@@ -99,6 +99,10 @@ type Provisioner struct {
 	// membershipAttrs are the attributes the membership edge is written with,
 	// held as this Provisioner's own copy (see ProvisionerConfig.MembershipAttrs).
 	membershipAttrs map[string]string
+	// foundingEdge and foundingTargets are ProvisionerConfig's: the edges Found
+	// writes from the partition it mints.
+	foundingEdge    string
+	foundingTargets []string
 }
 
 // ProvisionerConfig wires a Provisioner. Graph, Assign, Rules, MembershipEdge and
@@ -126,6 +130,14 @@ type Provisioner struct {
 // readers refuse. NewProvisioner copies the map, so a change to it after
 // construction does not reach later edges, and each edge is written with its
 // own copy.
+//
+// FoundingEdge and FoundingTargets are the edges a partition Found mints holds
+// from its first moment: partition -[FoundingEdge]-> each target, in Found's one
+// transaction, so a founded account is never seen seated in a partition holding
+// none of them. They are optional, and set together or not at all: census does
+// not interpret either, and a consumer reads them as whatever its grant resolver
+// expands. EnsureUser writes neither, because it mints a partition only through
+// its assigner and its partition may already exist.
 type ProvisionerConfig struct {
 	Graph           *GraphService
 	Rules           []nexus.Rule
@@ -133,6 +145,8 @@ type ProvisionerConfig struct {
 	UserType        string
 	MembershipEdge  string
 	MembershipAttrs map[string]string
+	FoundingEdge    string
+	FoundingTargets []string
 }
 
 // NewProvisioner validates the config and returns the provisioner.
@@ -152,6 +166,9 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 	if len(c.MembershipAttrs) == 0 {
 		return nil, &configError{"census: ProvisionerConfig.MembershipAttrs is required (the attributes the consumer's membership readers admit a member by; an edge written without them is a member those readers deny)"}
 	}
+	if (c.FoundingEdge == "") != (len(c.FoundingTargets) == 0) {
+		return nil, &configError{"census: ProvisionerConfig.FoundingEdge and FoundingTargets are set together: an edge type with no target writes nothing, and targets with no edge type have no edge to be written on"}
+	}
 	p := &Provisioner{
 		graph:           c.Graph,
 		rules:           c.Rules,
@@ -159,6 +176,8 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 		userType:        c.UserType,
 		membershipEdge:  c.MembershipEdge,
 		membershipAttrs: copyAttrs(c.MembershipAttrs),
+		foundingEdge:    c.FoundingEdge,
+		foundingTargets: append([]string(nil), c.FoundingTargets...),
 	}
 	if p.userType == "" {
 		p.userType = "user"
@@ -226,9 +245,10 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 }
 
 // Found creates, in one transaction, a fresh partition, a subject for
-// identity, the subject's identity edge and its membership edge into that
-// partition (written with the configured MembershipAttrs), and returns the
-// subject and partition. It is the founding write a sign-up makes for a
+// identity, the subject's identity edge, its membership edge into that
+// partition (written with the configured MembershipAttrs) and the partition's
+// founding edges (ProvisionerConfig.FoundingEdge), and returns the subject and
+// partition. It is the founding write a sign-up makes for a
 // verified identity no subject holds; EnsureUser is the sign-in path and never
 // founds unless its assigner does.
 //
@@ -288,6 +308,11 @@ func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, part
 		}
 		if err := tx.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
 			return fmt.Errorf("census: grant membership: %w", err)
+		}
+		for _, target := range p.foundingTargets {
+			if err := tx.Grant(ctx, partition, target, p.foundingEdge, nil, meta); err != nil {
+				return fmt.Errorf("census: grant founding edge %q: %w", target, err)
+			}
 		}
 		return nil
 	})

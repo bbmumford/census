@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/bbmumford/nexus"
 )
 
 // Found creates the partition, the subject, its identity edge and its
@@ -158,5 +160,64 @@ func TestFoundAttachesOnlyAVerifiedUnheldAddress(t *testing.T) {
 	}
 	if got := holders("v@example.com"); len(got) != 1 || got[0] != verified {
 		t.Errorf("a held address is now held by %v, want %s alone", got, verified)
+	}
+}
+
+// A provisioner given founding edges writes each from the partition Found mints,
+// in Found's transaction; an identity already held writes none.
+func TestFoundWritesThePartitionsFoundingEdges(t *testing.T) {
+	store := nexus.NewMemStore()
+	g, err := NewGraphService(GraphConfig{Graph: store, Log: NewMemTransferLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := func(context.Context, ProviderIdentity, string) (string, error) {
+		return "", errors.New("sign-in founds nothing")
+	}
+	p, err := NewProvisioner(ProvisionerConfig{
+		Graph: g, Assign: deny, Rules: []nexus.Rule{OutTargets("member")},
+		MembershipEdge: "member", MembershipAttrs: testMembershipAttrs,
+		FoundingEdge: "product", FoundingTargets: []string{"identity", "device"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ProviderIdentity{Provider: "google", ProviderUserID: "sub-founding"}
+	_, partition, err := p.Found(ctx, id, "")
+	if err != nil {
+		t.Fatalf("Found: %v", err)
+	}
+	for _, target := range []string{"identity", "device"} {
+		ok, err := store.HasRelationship(ctx, partition, target, "product")
+		if err != nil || !ok {
+			t.Errorf("founding edge to %s = %v, %v", target, ok, err)
+		}
+	}
+	if _, _, err := p.Found(ctx, id, ""); !errors.Is(err, ErrIdentityHeld) {
+		t.Fatalf("second Found = %v, want ErrIdentityHeld", err)
+	}
+}
+
+// An edge type with no target, or targets with no edge type, is refused at
+// construction, since either would found a partition missing the edges its
+// consumer configured.
+func TestFoundingEdgesAreSetTogether(t *testing.T) {
+	g, err := NewGraphService(GraphConfig{Graph: nexus.NewMemStore(), Log: NewMemTransferLog()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny := func(context.Context, ProviderIdentity, string) (string, error) { return "", nil }
+	base := ProvisionerConfig{
+		Graph: g, Assign: deny, Rules: []nexus.Rule{OutTargets("member")},
+		MembershipEdge: "member", MembershipAttrs: testMembershipAttrs,
+	}
+	edgeOnly, targetsOnly := base, base
+	edgeOnly.FoundingEdge = "product"
+	targetsOnly.FoundingTargets = []string{"identity"}
+	if _, err := NewProvisioner(edgeOnly); err == nil {
+		t.Error("an edge type with no target was accepted")
+	}
+	if _, err := NewProvisioner(targetsOnly); err == nil {
+		t.Error("targets with no edge type were accepted")
 	}
 }

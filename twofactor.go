@@ -283,6 +283,25 @@ func (s *Service) ReplaceBackupCodes(ctx context.Context, partition, subject str
 	return nil
 }
 
+// BackupCodesRemaining answers how many of a subject's backup codes are unspent
+// in partition, which a status read reports. A subject with no set answers 0.
+func (s *Service) BackupCodesRemaining(ctx context.Context, partition, subject string) (int, error) {
+	if partition == "" {
+		return 0, ErrUnscoped
+	}
+	rows, err := s.store.ListCredentialsBySubject(ctx, partition, subject)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, c := range rows {
+		if c.Kind == KindBackupCode {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // RedeemBackupCode accepts one of a subject's backup codes and spends it.
 //
 // WHAT CONSUMES IT: the login path a subject reaches with no authenticator.
