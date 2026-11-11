@@ -103,7 +103,19 @@ type Provisioner struct {
 	// writes from the partition it mints.
 	foundingEdge    string
 	foundingTargets []string
+	// foundingSeat is ProvisionerConfig.FoundingSeat: run inside Found's
+	// transaction after every edge Found writes.
+	foundingSeat FoundingSeat
 }
+
+// FoundingSeat seats a founder in the partition Found mints, inside Found's
+// transaction: it receives that transaction, the subject and partition Found
+// minted, and the change metadata Found writes its own edges with. An error
+// aborts the founding, so nothing Found wrote is kept. census does not
+// interpret what it writes; a consumer writes the records its grant resolver
+// reads (the founder's role, say), which then exist exactly when the partition
+// and its membership do.
+type FoundingSeat func(ctx context.Context, tx *GraphTx, subject, partition string, meta ChangeMeta) error
 
 // ProvisionerConfig wires a Provisioner. Graph, Assign, Rules, MembershipEdge and
 // MembershipAttrs are all required.
@@ -138,6 +150,9 @@ type Provisioner struct {
 // not interpret either, and a consumer reads them as whatever its grant resolver
 // expands. EnsureUser writes neither, because it mints a partition only through
 // its assigner and its partition may already exist.
+//
+// FoundingSeat is optional: when set, Found runs it last inside its one
+// transaction (see FoundingSeat). EnsureUser never runs it.
 type ProvisionerConfig struct {
 	Graph           *GraphService
 	Rules           []nexus.Rule
@@ -147,6 +162,7 @@ type ProvisionerConfig struct {
 	MembershipAttrs map[string]string
 	FoundingEdge    string
 	FoundingTargets []string
+	FoundingSeat    FoundingSeat
 }
 
 // NewProvisioner validates the config and returns the provisioner.
@@ -178,11 +194,24 @@ func NewProvisioner(c ProvisionerConfig) (*Provisioner, error) {
 		membershipAttrs: copyAttrs(c.MembershipAttrs),
 		foundingEdge:    c.FoundingEdge,
 		foundingTargets: append([]string(nil), c.FoundingTargets...),
+		foundingSeat:    c.FoundingSeat,
 	}
 	if p.userType == "" {
 		p.userType = "user"
 	}
 	return p, nil
+}
+
+// WithFoundingSeat returns a copy of p whose Found runs seat inside its
+// transaction, as ProvisionerConfig.FoundingSeat does; a nil seat clears it.
+// It lets a consumer handed a built Provisioner attach the seat its own
+// records need without rebuilding the configuration.
+func (p *Provisioner) WithFoundingSeat(seat FoundingSeat) *Provisioner {
+	cp := *p
+	cp.membershipAttrs = copyAttrs(p.membershipAttrs)
+	cp.foundingTargets = append([]string(nil), p.foundingTargets...)
+	cp.foundingSeat = seat
+	return &cp
 }
 
 // EnsureUser returns the subject for identity, creating one on first sight, along
@@ -247,8 +276,8 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 // Found creates, in one transaction, a fresh partition, a subject for
 // identity, the subject's identity edge, its membership edge into that
 // partition (written with the configured MembershipAttrs) and the partition's
-// founding edges (ProvisionerConfig.FoundingEdge), and returns the subject and
-// partition. It is the founding write a sign-up makes for a
+// founding edges (ProvisionerConfig.FoundingEdge), runs the founding seat when
+// one is set, and returns the subject and partition. It is the founding write a sign-up makes for a
 // verified identity no subject holds; EnsureUser is the sign-in path and never
 // founds unless its assigner does.
 //
@@ -312,6 +341,11 @@ func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, part
 		for _, target := range p.foundingTargets {
 			if err := tx.Grant(ctx, partition, target, p.foundingEdge, nil, meta); err != nil {
 				return fmt.Errorf("census: grant founding edge %q: %w", target, err)
+			}
+		}
+		if p.foundingSeat != nil {
+			if err := p.foundingSeat(ctx, tx, subject, partition, meta); err != nil {
+				return fmt.Errorf("census: seat the founder: %w", err)
 			}
 		}
 		return nil
