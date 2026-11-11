@@ -484,3 +484,18 @@ func (t *GraphTx) OutEdges(ctx context.Context, from string, types ...string) ([
 func (t *GraphTx) InEdges(ctx context.Context, to string, types ...string) ([]nexus.Relationship, error) {
 	return t.w.InEdges(ctx, to, types...)
 }
+
+// SQLTx returns the SQL transaction t runs in, and false over a store that is not
+// SQL-backed. A table on the graph's own database is written through it, so its
+// row commits or rolls back with the graph's writes and the reads fn judged it
+// on: tenant/space's Space role, scope and access-list writes stamp the subject's
+// live membership instance read through t and write the row in the same
+// transaction. Atomic owns the transaction: a caller never commits or rolls it
+// back, and a failed statement on it is returned from fn so Atomic rolls back.
+func (t *GraphTx) SQLTx() (*sql.Tx, bool) {
+	sw, ok := t.w.(*nexus.SQLTxWriter)
+	if !ok {
+		return nil, false
+	}
+	return sw.Tx(), true
+}
