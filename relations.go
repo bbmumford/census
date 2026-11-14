@@ -499,3 +499,19 @@ func (t *GraphTx) SQLTx() (*sql.Tx, bool) {
 	}
 	return sw.Tx(), true
 }
+
+// ViewSQLTx returns the SQL transaction the View that handed r reads in, and false
+// when r is not a View's reader over a SQL-backed store. A table on the graph's own
+// database is read through it at the snapshot fn's graph reads see, so a decision
+// made from those rows and the graph's edges is made from one state. View owns the
+// transaction and rolls it back when fn returns: a caller never commits or rolls it
+// back, and nothing written through it is kept.
+// TODO: tenant/space's Space store reads a subject's Space rows through it, in the
+// View its membership writer reads the subject's live instance in.
+func ViewSQLTx(r nexus.GraphReader) (*sql.Tx, bool) {
+	sr, ok := r.(*nexus.SQLTxReader)
+	if !ok {
+		return nil, false
+	}
+	return sr.Tx(), true
+}
