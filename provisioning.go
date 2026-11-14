@@ -76,6 +76,10 @@ var (
 	// returning subject whose ladder yields nothing/ambiguous, or an assigner that
 	// returned an empty partition. The caller maps it to a denied login.
 	ErrNoPartition = errors.New("census: subject has no resolvable partition")
+	// ErrAmbiguousPartition is what an *AmbiguousPartitionError reports itself as
+	// beside ErrNoPartition: a returning subject whose ladder's first matching rung
+	// yielded several partitions.
+	ErrAmbiguousPartition = errors.New("census: subject holds several partitions")
 	// ErrIdentityIncomplete is returned when the provider identity key is empty.
 	ErrIdentityIncomplete = errors.New("census: provider identity incomplete")
 	// ErrIdentityHeld is returned by Found when a subject already holds the
@@ -220,7 +224,10 @@ func (p *Provisioner) WithFoundingSeat(seat FoundingSeat) *Provisioner {
 // the injected assigner. FAIL-CLOSED: an empty/unresolvable partition returns
 // ErrNoPartition and no session is issued upstream. requestedScope is passed to
 // the assigner for a new subject and ignored for a returning one (whose partition
-// comes from its actual memberships, never a caller hint).
+// comes from its actual memberships, never a caller hint). A returning subject
+// holding several partitions is answered with its subject, an empty partition
+// and an *AmbiguousPartitionError naming them, so a sign-in can have the person
+// choose among exactly those.
 func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity, requestedScope string) (subject string, partition string, err error) {
 	if identity.Provider == "" || identity.ProviderUserID == "" {
 		return "", "", ErrIdentityIncomplete
@@ -235,6 +242,10 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 	if len(edges) > 0 {
 		subject = edges[0].From
 		partition, err = p.resolvePartition(ctx, subject)
+		var ambiguous *AmbiguousPartitionError
+		if errors.As(err, &ambiguous) {
+			return subject, "", err
+		}
 		if err != nil {
 			return "", "", err
 		}
@@ -369,18 +380,65 @@ func copyAttrs(attrs map[string]string) map[string]string {
 	return out
 }
 
+// AmbiguousPartitionError is EnsureUser's answer for a returning subject whose
+// ladder's first matching rung yielded several partitions. Candidates are those
+// partitions, distinct and in the ladder's order, for a sign-in that asks the
+// person to choose; nothing is picked among them here. errors.Is reports it as
+// ErrAmbiguousPartition and as ErrNoPartition, so a caller that answers an
+// unresolved partition with a denied login answers this one the same way.
+type AmbiguousPartitionError struct {
+	Candidates []string
+}
+
+func (e *AmbiguousPartitionError) Error() string {
+	return fmt.Sprintf("%v: %d candidates", ErrAmbiguousPartition, len(e.Candidates))
+}
+
+// Is reports the error as ErrAmbiguousPartition and ErrNoPartition.
+func (e *AmbiguousPartitionError) Is(target error) bool {
+	return target == ErrAmbiguousPartition || target == ErrNoPartition
+}
+
 // resolvePartition resolves a returning subject's partition through the ladder,
-// failing closed when the outcome is unresolved or ambiguous (both leave
-// Resolution.Value == "").
+// failing closed when the outcome is unresolved (ErrNoPartition) or ambiguous
+// (an *AmbiguousPartitionError carrying the first matching rung's partitions).
 func (p *Provisioner) resolvePartition(ctx context.Context, subject string) (string, error) {
 	res, err := p.graph.Resolve(ctx, subject, p.rules...)
 	if err != nil {
 		return "", fmt.Errorf("census: resolve partition: %w", err)
 	}
+	if res.Ambiguous {
+		return "", &AmbiguousPartitionError{Candidates: DecidingCandidates(res)}
+	}
 	if !res.Resolved || res.Value == "" {
 		return "", ErrNoPartition
 	}
 	return res.Value, nil
+}
+
+// DecidingCandidates is the distinct values of the rung that decided an ambiguous
+// resolution: the first rung that yielded any, in its order. Later rungs' values
+// stay out, since nexus.Resolve lets no later rung override a decided outcome.
+// resolvePartition and a sign-in's partition resolver over GraphService.Resolve
+// both name an ambiguous subject's candidates through it.
+func DecidingCandidates(res nexus.Resolution) []string {
+	if len(res.Candidates) == 0 {
+		return nil
+	}
+	via := res.Candidates[0].Via
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range res.Candidates {
+		if c.Via != via {
+			break
+		}
+		if c.Value == "" || seen[c.Value] {
+			continue
+		}
+		seen[c.Value] = true
+		out = append(out, c.Value)
+	}
+	return out
 }
 
 // MintPartition creates a fresh partition entity and returns its id — the building

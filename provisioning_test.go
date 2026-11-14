@@ -127,6 +127,36 @@ func TestEnsureUser_UnresolvableReturningFailsClosed(t *testing.T) {
 	}
 }
 
+// A returning subject holding two partitions is answered with its subject and an
+// *AmbiguousPartitionError naming both, which errors.Is also reports as
+// ErrNoPartition; no partition is picked, and the hint is not one.
+func TestEnsureUser_AmbiguousReturningNamesItsCandidates(t *testing.T) {
+	p, _ := newProvisioner(t, func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "part-1", nil })
+	id := ProviderIdentity{Provider: "google", ProviderUserID: "sub-2"}
+	subject, _, err := p.EnsureUser(ctx, id, "")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := p.graph.Grant(ctx, subject, "part-2", "member", copyAttrs(testMembershipAttrs), ChangeMeta{Partition: "part-2", Trigger: "test"}); err != nil {
+		t.Fatalf("grant the second membership: %v", err)
+	}
+	got, partition, err := p.EnsureUser(ctx, id, "part-2")
+	var ambiguous *AmbiguousPartitionError
+	if !errors.As(err, &ambiguous) || !errors.Is(err, ErrNoPartition) || !errors.Is(err, ErrAmbiguousPartition) {
+		t.Fatalf("returning answered %v, want an *AmbiguousPartitionError", err)
+	}
+	if got != subject || partition != "" {
+		t.Fatalf("returning answered subject %q partition %q, want %q and none", got, partition, subject)
+	}
+	seen := map[string]bool{}
+	for _, c := range ambiguous.Candidates {
+		seen[c] = true
+	}
+	if len(ambiguous.Candidates) != 2 || !seen["part-1"] || !seen["part-2"] {
+		t.Fatalf("candidates = %v, want part-1 and part-2", ambiguous.Candidates)
+	}
+}
+
 func TestEnsureUser_IncompleteIdentity(t *testing.T) {
 	p, _ := newProvisioner(t, func(_ context.Context, _ ProviderIdentity, _ string) (string, error) { return "p", nil })
 	if _, _, err := p.EnsureUser(ctx, ProviderIdentity{Provider: "google"}, ""); !errors.Is(err, ErrIdentityIncomplete) {
