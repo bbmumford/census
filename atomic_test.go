@@ -427,12 +427,12 @@ func TestSQLTransferLog_SinceHasItsIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sqlText string
-	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_census_transfers_seq'`).Scan(&sqlText)
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idxCensusTransfersSeq'`).Scan(&sqlText)
 	if err != nil {
-		t.Fatalf("idx_census_transfers_seq: %v", err)
+		t.Fatalf("idxCensusTransfersSeq: %v", err)
 	}
 	var plan string
-	rows, err := db.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT id FROM census_transfers WHERE seq > 0 ORDER BY seq LIMIT 5`)
+	rows, err := db.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT id FROM censusTransfers WHERE seq > 0 ORDER BY seq LIMIT 5`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestSQLTransferLog_SinceHasItsIndex(t *testing.T) {
 		}
 		plan += detail + "; "
 	}
-	if !strings.Contains(plan, "idx_census_transfers_seq") {
+	if !strings.Contains(plan, "idxCensusTransfersSeq") {
 		t.Fatalf("Since's query does not use the seq index: %s", plan)
 	}
 }

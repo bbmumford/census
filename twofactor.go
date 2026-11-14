@@ -41,14 +41,14 @@ var ErrUnscoped = errors.New("census: a second-factor write requires the partiti
 //
 // It hashes the subject rather than a login handle because this credential has
 // no handle: the subject is what a verification is for. The store holds (kind,
-// identifier_hash) unique, so this is also what makes a second time-step factor
+// identifierHash) unique, so this is also what makes a second time-step factor
 // for one subject impossible, and what lets a replacement re-put the same row
 // instead of leaving two secrets that both verify.
 func totpIdentifier(subject string) string { return hashHex(KindTOTP + ":" + subject) }
 
 // backupIdentifier is the lookup hash of one position in a subject's backup-code
 // set. The position carries no meaning beyond keeping the set's rows distinct
-// under the store's (kind, identifier_hash) uniqueness: a backup code cannot be
+// under the store's (kind, identifierHash) uniqueness: a backup code cannot be
 // looked up by its value, because the digests are the Hasher's and are compared,
 // not matched.
 func backupIdentifier(subject string, position int) string {

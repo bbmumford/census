@@ -3,7 +3,7 @@ package census
 import "context"
 
 // The durable half of the spent-step record SpendStep and DeleteSpentSteps
-// declare, over the census_spent_steps table InitSchema creates. MemStore is the
+// declare, over the censusSpentSteps table InitSchema creates. MemStore is the
 // semantic reference these two have to match; eachVault runs every case against
 // both.
 
@@ -15,7 +15,7 @@ import "context"
 // written rather than a driver-specific OR IGNORE so the one statement holds on
 // every database/sql driver this store is opened over.
 func (s *SQLVaultStore) SpendStep(ctx context.Context, partition, subject string, step, spentAt int64) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO census_spent_steps (subject, step, partition, spent_at)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO censusSpentSteps (subject, step, partition, spentAt)
 		VALUES (?,?,?,?) ON CONFLICT(subject, step) DO NOTHING`, subject, step, partition, spentAt)
 	if err != nil {
 		return false, err
@@ -33,7 +33,7 @@ func (s *SQLVaultStore) SpendStep(ctx context.Context, partition, subject string
 // for already holds, and DeleteTOTP calls this for every subject it removes a
 // factor from, enrolled steps or not.
 func (s *SQLVaultStore) DeleteSpentSteps(ctx context.Context, partition, subject string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM census_spent_steps
+	_, err := s.db.ExecContext(ctx, `DELETE FROM censusSpentSteps
 		WHERE (? <> '' AND partition = ?) AND subject = ?`, partition, partition, subject)
 	return err
 }

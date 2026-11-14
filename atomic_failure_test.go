@@ -13,7 +13,7 @@ import (
 func TestAtomic_ADroppedRecordErrorStillRollsBack(t *testing.T) {
 	db := fileDB(t)
 	s, g, log := sqlGraph(t, db)
-	if _, err := db.ExecContext(ctx, `CREATE TRIGGER refuse_event BEFORE INSERT ON census_transfers
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER refuseEvent BEFORE INSERT ON censusTransfers
 		BEGIN SELECT RAISE(ABORT, 'event refused'); END`); err != nil {
 		t.Fatal(err)
 	}
