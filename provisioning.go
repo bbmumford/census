@@ -284,7 +284,18 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 	return subject, partition, nil
 }
 
-// Found creates, in one transaction, a fresh partition, a subject for
+// PartitionNameAttr is the partition entity's attribute holding the name the
+// partition was founded with (FoundNamed) or last renamed to (RenamePartition);
+// PartitionName reads it.
+const PartitionNameAttr = "name"
+
+// Found is FoundNamed with no partition name: the partition entity carries no
+// PartitionNameAttr.
+func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, partitionType string) (subject string, partition string, err error) {
+	return p.FoundNamed(ctx, identity, partitionType, "")
+}
+
+// FoundNamed creates, in one transaction, a fresh partition, a subject for
 // identity, the subject's identity edge, its membership edge into that
 // partition (written with the configured MembershipAttrs) and the partition's
 // founding edges (ProvisionerConfig.FoundingEdge), runs the founding seat when
@@ -295,8 +306,10 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 // The identity lookup runs inside the transaction, so an identity held by a
 // subject, including one founded concurrently, is ErrIdentityHeld and nothing
 // is written. partitionType defaults to "partition". A graph store that cannot
-// run a transaction answers ErrNoTransaction and writes nothing.
-func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, partitionType string) (subject string, partition string, err error) {
+// run a transaction answers ErrNoTransaction and writes nothing. A non-empty
+// name is written as the partition entity's PartitionNameAttr in the same
+// transaction, so a partition founded with a name is never seen without it.
+func (p *Provisioner) FoundNamed(ctx context.Context, identity ProviderIdentity, partitionType, name string) (subject string, partition string, err error) {
 	if identity.Provider == "" || identity.ProviderUserID == "" {
 		return "", "", ErrIdentityIncomplete
 	}
@@ -313,7 +326,11 @@ func (p *Provisioner) Found(ctx context.Context, identity ProviderIdentity, part
 			return ErrIdentityHeld
 		}
 		partition = tx.newID()
-		if err := tx.PutEntity(ctx, &nexus.Entity{ID: partition, Type: partitionType}); err != nil {
+		minted := &nexus.Entity{ID: partition, Type: partitionType}
+		if name != "" {
+			minted.Attrs = map[string]string{PartitionNameAttr: name}
+		}
+		if err := tx.PutEntity(ctx, minted); err != nil {
 			return fmt.Errorf("census: mint partition: %w", err)
 		}
 		subject = tx.newID()
