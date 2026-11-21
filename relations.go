@@ -113,27 +113,25 @@ func NewGraphService(c GraphConfig) (*GraphService, error) {
 
 // Grant adds an opaque typed edge (from -> to, of edgeType, with attrs) and records a "grant" transfer
 // event. Adding an edge that already exists updates its attrs and still records the event, so a
-// re-grant is auditable.
+// re-grant is auditable. The edge and its event commit together or not at all (see changeEdge).
 func (s *GraphService) Grant(ctx context.Context, from, to, edgeType string, attrs map[string]string, meta ChangeMeta) error {
-	if err := s.graph.PutRelationship(ctx, &nexus.Relationship{From: from, To: to, Type: edgeType, Attrs: attrs}); err != nil {
-		return err
-	}
-	return s.record(ctx, from, to, edgeType, "grant", meta)
+	return s.changeEdge(ctx, from, to, edgeType, "grant", meta, func(w edgeWriter) error {
+		return w.PutRelationship(ctx, &nexus.Relationship{From: from, To: to, Type: edgeType, Attrs: attrs})
+	})
 }
 
 // Revoke removes an opaque typed edge subject to every Guard, then records a "revoke" transfer event.
 // If any guard fails the edge is left intact and the guard's error is returned (fail-closed); the
-// event is recorded only after the edge is actually removed.
+// edge's removal and its event commit together or not at all (see changeEdge).
 func (s *GraphService) Revoke(ctx context.Context, from, to, edgeType string, meta ChangeMeta, guards ...Guard) error {
 	for _, g := range guards {
 		if err := g(ctx, s.graph); err != nil {
 			return err
 		}
 	}
-	if err := s.graph.DeleteRelationship(ctx, from, to, edgeType); err != nil {
-		return err
-	}
-	return s.record(ctx, from, to, edgeType, "revoke", meta)
+	return s.changeEdge(ctx, from, to, edgeType, "revoke", meta, func(w edgeWriter) error {
+		return w.DeleteRelationship(ctx, from, to, edgeType)
+	})
 }
 
 // RevokeKeepingMin removes an edge only while more than `min` edges of edgeType point
@@ -149,13 +147,88 @@ func (s *GraphService) Revoke(ctx context.Context, from, to, edgeType string, me
 // cardinality case is a method rather than a Guard, and Guard is left for checks that
 // do not have to survive the write.
 //
-// The transfer event is recorded only after the delete commits, so the log names
-// removals that happened rather than removals that were attempted.
+// The transfer event is recorded only for a delete that happened, and the delete and
+// its event commit together or not at all (see changeEdge), so the log names removals
+// that happened rather than removals that were attempted.
 func (s *GraphService) RevokeKeepingMin(ctx context.Context, from, to, edgeType string, min int, meta ChangeMeta) error {
-	if err := s.graph.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min); err != nil {
+	return s.changeEdge(ctx, from, to, edgeType, "revoke", meta, func(w edgeWriter) error {
+		return w.DeleteRelationshipKeepingMin(ctx, from, to, edgeType, min)
+	})
+}
+
+// edgeWriter is the edge writes Grant, Revoke and RevokeKeepingMin make: an
+// Atomic transaction's writer or, for a store and log that cannot share one, the
+// store itself.
+type edgeWriter interface {
+	PutRelationship(ctx context.Context, r *nexus.Relationship) error
+	DeleteRelationship(ctx context.Context, from, to, typ string) error
+	DeleteRelationshipKeepingMin(ctx context.Context, from, to, typ string, min int) error
+}
+
+// changeEdge makes one edge change with write and records its change event. Where
+// Atomic can run, the write and the event are one transaction: a refused event
+// rolls the write back, and History never misses a change the graph holds. Where
+// Atomic answers ErrNoTransaction before running (a store and log that cannot
+// share a transaction), the write commits first and a refused event puts the edge
+// back as it was read before the write; only a crash between the two can then
+// leave an unrecorded change.
+func (s *GraphService) changeEdge(ctx context.Context, from, to, edgeType, change string, meta ChangeMeta, write func(edgeWriter) error) error {
+	ran := false
+	err := s.Atomic(ctx, func(tx *GraphTx) error {
+		ran = true
+		return tx.do(func() error {
+			if err := write(tx.w); err != nil {
+				return err
+			}
+			return tx.record(ctx, []*TransferEvent{tx.event(nexus.EdgeKey{From: from, To: to, Type: edgeType}, change, meta, tx.now())})
+		})
+	})
+	if ran || !errors.Is(err, ErrNoTransaction) {
 		return err
 	}
-	return s.record(ctx, from, to, edgeType, "revoke", meta)
+	prior, held, err := s.edge(ctx, from, to, edgeType)
+	if err != nil {
+		return err
+	}
+	if err := write(s.graph); err != nil {
+		return err
+	}
+	if err := s.record(ctx, from, to, edgeType, change, meta); err != nil {
+		if rerr := s.restoreEdge(ctx, from, to, edgeType, prior, held); rerr != nil {
+			return errors.Join(err, rerr)
+		}
+		return err
+	}
+	return nil
+}
+
+// edge reads the edge (from, to, edgeType) as the graph holds it, and whether it
+// holds one.
+func (s *GraphService) edge(ctx context.Context, from, to, edgeType string) (nexus.Relationship, bool, error) {
+	out, err := s.graph.OutEdges(ctx, from, edgeType)
+	if err != nil {
+		return nexus.Relationship{}, false, err
+	}
+	for _, r := range out {
+		if r.To == to && r.Type == edgeType {
+			return r, true, nil
+		}
+	}
+	return nexus.Relationship{}, false, nil
+}
+
+// restoreEdge puts the edge (from, to, edgeType) back to what edge read before a
+// write whose event the log refused: the edge with its attributes when it was
+// held, no edge when it was not.
+func (s *GraphService) restoreEdge(ctx context.Context, from, to, edgeType string, prior nexus.Relationship, held bool) error {
+	if held {
+		return s.graph.PutRelationship(ctx, &prior)
+	}
+	err := s.graph.DeleteRelationship(ctx, from, to, edgeType)
+	if errors.Is(err, nexus.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 func (s *GraphService) record(ctx context.Context, from, to, edgeType, change string, meta ChangeMeta) error {
