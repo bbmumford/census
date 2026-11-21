@@ -15,9 +15,9 @@ var ErrConflict = errors.New("census: conflict")
 // VaultStore persists the account-feature records that carry secrets — credentials, the ids of spent
 // single-use tokens, and API keys. Only sealed material reaches it: encrypted second-factor secrets,
 // deterministic identifier/token hashes, and Hasher-produced password digests. The Partition is opaque and
-// the store filters on it, never interprets it; an empty partition ("") on a partition-scoped read matches
-// NOTHING — the predicates read (? <> '' AND partition = ?), so an unscoped read returns no rows rather
-// than every partition's. These rows are credentials and keys: a blank partition that matched everything
+// the store filters on it, never interprets it; an empty partition on a partition-scoped read matches
+// NOTHING — every predicate rejects an empty parameter before comparing, so an unscoped read returns no
+// rows rather than every partition's. These rows are credentials and keys: a blank partition that matched everything
 // would list and revoke across partitions. There is no unscoped read; a caller that must cross partitions
 // names the partition it means. The graph itself (entities + relationships) is the companion nexus
 // store's concern, not this one. A consumer supplies a *sql.DB store (the shipped default), a

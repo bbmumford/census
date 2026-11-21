@@ -13,7 +13,9 @@ import (
 // membership into that partition together; the identity then resolves at
 // sign-in to the founded subject and partition.
 func TestFoundCreatesSubjectIdentityAndPartitionTogether(t *testing.T) {
-	deny := func(context.Context, ProviderIdentity, string) (string, error) { return "", errors.New("sign-in founds nothing") }
+	deny := func(context.Context, ProviderIdentity, string) (string, error) {
+		return "", errors.New("sign-in founds nothing")
+	}
 	p, g := newProvisioner(t, deny)
 	id := ProviderIdentity{Provider: "google", ProviderUserID: "sub-9", Email: "f@example.com", Name: "F"}
 

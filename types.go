@@ -21,7 +21,7 @@ import "time"
 // plaintext password.
 type Credential struct {
 	ID             string
-	Partition          string // opaque partition-scope
+	Partition      string // opaque partition-scope
 	Subject        string // opaque graph entity id this credential authenticates
 	Kind           string // opaque credential type
 	IdentifierHash string // deterministic hash of the normalized login identifier
@@ -55,7 +55,7 @@ type EmailCodeSigner interface {
 // Capabilities is the opaque capability set the consumer's authorizer interprets.
 type APIKey struct {
 	ID           string
-	Partition        string // opaque partition-scope
+	Partition    string // opaque partition-scope
 	Subject      string // opaque graph entity id the key authenticates as
 	Label        string
 	KeyHash      string // hash of the raw key

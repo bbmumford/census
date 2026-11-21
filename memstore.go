@@ -13,22 +13,22 @@ import (
 // durable (*sql.DB) store must match. Thread-safe; id generator injectable. Partition is opaque; "" on a
 // partition-scoped read matches nothing — see partitionMatch, which both backends are held to.
 type MemStore struct {
-	mu            sync.Mutex
-	credentials   map[string]*Credential
-	spentIDs      map[string]int64
-	apiKeys       map[string]*APIKey
-	spentSteps    map[spentStep]spentRecord
-	newID         func() string
+	mu          sync.Mutex
+	credentials map[string]*Credential
+	spentIDs    map[string]int64
+	apiKeys     map[string]*APIKey
+	spentSteps  map[spentStep]spentRecord
+	newID       func() string
 }
 
 // NewMemStore builds an empty vault.
 func NewMemStore() *MemStore {
 	return &MemStore{
-		credentials:   map[string]*Credential{},
-		spentIDs:      map[string]int64{},
-		apiKeys:       map[string]*APIKey{},
-		spentSteps:    map[spentStep]spentRecord{},
-		newID:         randomID,
+		credentials: map[string]*Credential{},
+		spentIDs:    map[string]int64{},
+		apiKeys:     map[string]*APIKey{},
+		spentSteps:  map[spentStep]spentRecord{},
+		newID:       randomID,
 	}
 }
 
@@ -43,10 +43,11 @@ func randomID() string {
 // transfer lookup in this store filters through it.
 //
 // An empty `want` names no partition and matches nothing. SQLVaultStore answers
-// the same way — its predicates read (? <> '' AND partition = ?) — and the two
-// have to agree, because a test written against this store is what certifies the
-// other's behaviour. These rows are credentials and keys, so a `want` that matched
-// everything would list and revoke across partitions.
+// the same way — its predicates reject an empty partition parameter before
+// comparing — and the two have to agree, because a test written against this
+// store is what certifies the other's behaviour. These rows are credentials and
+// keys, so a `want` that matched everything would list and revoke across
+// partitions.
 func partitionMatch(want, have string) bool { return want != "" && want == have }
 
 func fromUnixNano(n int64) time.Time { return time.Unix(0, n).UTC() }

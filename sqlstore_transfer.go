@@ -59,8 +59,8 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 }
 
 // List returns every recorded event where the entity is the edge source or target, scoped to one
-// partition, in the order recorded. An empty partition matches nothing: the predicate reads
-// (? <> '' AND partition = ?), so an unscoped call returns no events rather than every partition's
+// partition, in the order recorded. An empty partition matches nothing: the predicate rejects an
+// empty partition parameter before comparing, so an unscoped call returns no events rather than every partition's
 // provenance — an audit read that names no partition comes back empty, it does not come back complete.
 func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
 	rows, err := l.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM censusTransfers

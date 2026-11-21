@@ -11,8 +11,8 @@ import (
 // store. The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and
 // registers the driver (go-libsql/Turso, modernc, Postgres), so census pulls no driver dependency yet
 // works out of the box. Partition is an opaque column the store filters on but never interprets; an empty
-// partition ("") on a partition-scoped read matches nothing, because the predicates read
-// (? <> '' AND partition = ?) — an unscoped read returns no rows, never every partition's. Times persist as INTEGER Unix nanoseconds with
+// partition on a partition-scoped read matches nothing, because every partition-scoped predicate rejects
+// an empty parameter before comparing — an unscoped read returns no rows, never every partition's. Times persist as INTEGER Unix nanoseconds with
 // NULL for an unset *time.Time. Only sealed material is stored (encrypted emails, deterministic hashes,
 // Hasher digests). The VaultStore interface stays the escape-hatch for a mesh gateway or MemStore.
 type SQLVaultStore struct{ db *sql.DB }

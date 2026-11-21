@@ -86,7 +86,7 @@ func (s *Service) RegisterPassword(ctx context.Context, partition, subject, iden
 	}
 	now := s.now()
 	c := &Credential{
-		Partition:          partition,
+		Partition:      partition,
 		Subject:        subject,
 		Kind:           "password",
 		IdentifierHash: hashHex(normalizeEmail(identifier)),
@@ -232,7 +232,7 @@ func (s *Service) MintAPIKey(ctx context.Context, partition, subject, label stri
 	rawKey = s.newKey()
 	now := s.now()
 	key = &APIKey{
-		Partition:        partition,
+		Partition:    partition,
 		Subject:      subject,
 		Label:        label,
 		KeyHash:      hashHex(rawKey),
