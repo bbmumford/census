@@ -228,6 +228,18 @@ func (p *Provisioner) WithFoundingSeat(seat FoundingSeat) *Provisioner {
 // holding several partitions is answered with its subject, an empty partition
 // and an *AmbiguousPartitionError naming them, so a sign-in can have the person
 // choose among exactly those.
+//
+// A first-time subject's entity, identity edge and membership edge are written
+// in one Atomic transaction that looks the identity up again before it writes,
+// as FoundNamed does, so two first sign-ins of one identity at once make one
+// subject, and a write that fails leaves none of the three. On an engine whose
+// writers queue, the later sign-in finds the identity inside its transaction
+// and answers the same subject; on one that refuses a concurrent writer, it
+// answers that engine's error and writes nothing.
+// The assigner runs before that transaction, because a consumer's assigner may
+// write the graph itself (MintPartition). A graph whose store and log cannot
+// share a transaction answers ErrNoTransaction for a first-time subject and
+// writes nothing.
 func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity, requestedScope string) (subject string, partition string, err error) {
 	if identity.Provider == "" || identity.ProviderUserID == "" {
 		return "", "", ErrIdentityIncomplete
@@ -240,16 +252,7 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 		return "", "", fmt.Errorf("census: lookup identity: %w", err)
 	}
 	if len(edges) > 0 {
-		subject = edges[0].From
-		partition, err = p.resolvePartition(ctx, subject)
-		var ambiguous *AmbiguousPartitionError
-		if errors.As(err, &ambiguous) {
-			return subject, "", err
-		}
-		if err != nil {
-			return "", "", err
-		}
-		return subject, partition, nil
+		return p.returningSubject(ctx, edges[0].From)
 	}
 
 	// FIRST-TIME: the onboarding policy assigns the partition (or denies).
@@ -261,10 +264,61 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 		return "", "", ErrNoPartition
 	}
 
-	// CREATE the subject entity, its identity edge, and its partition membership.
-	// Grant records each edge to the transfer log (provenance for a new account).
-	subject = p.graph.newID()
+	// CREATE the subject entity, its identity edge, and its partition membership
+	// in one transaction. Each Grant records its edge to the transfer log
+	// (provenance for a new account) in the same transaction.
+	var held string
 	meta := ChangeMeta{Partition: partition, Trigger: "ensure_user", Source: identity.Provider, Auto: true}
+	err = p.graph.Atomic(ctx, func(tx *GraphTx) error {
+		found, err := tx.InEdges(ctx, identity.ProviderUserID, idEdge)
+		if err != nil {
+			return fmt.Errorf("census: lookup identity: %w", err)
+		}
+		if len(found) > 0 {
+			held = found[0].From
+			return nil
+		}
+		subject, err = p.putSubject(ctx, tx, identity)
+		if err != nil {
+			return err
+		}
+		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, nil, meta); err != nil {
+			return fmt.Errorf("census: grant identity edge: %w", err)
+		}
+		if err := tx.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
+			return fmt.Errorf("census: grant membership: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if held != "" {
+		return p.returningSubject(ctx, held)
+	}
+	return subject, partition, nil
+}
+
+// returningSubject is EnsureUser's answer for a subject that already holds the
+// identity: its partition resolved through the ladder, or the subject with an
+// *AmbiguousPartitionError naming its candidates.
+func (p *Provisioner) returningSubject(ctx context.Context, subject string) (string, string, error) {
+	partition, err := p.resolvePartition(ctx, subject)
+	var ambiguous *AmbiguousPartitionError
+	if errors.As(err, &ambiguous) {
+		return subject, "", err
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return subject, partition, nil
+}
+
+// putSubject writes a new subject entity for identity inside tx, carrying the
+// identity's email and name as attributes, and returns its id. EnsureUser and
+// FoundNamed create every subject through it.
+func (p *Provisioner) putSubject(ctx context.Context, tx *GraphTx, identity ProviderIdentity) (string, error) {
+	subject := tx.newID()
 	attrs := map[string]string{}
 	if identity.Email != "" {
 		attrs["email"] = identity.Email
@@ -272,16 +326,10 @@ func (p *Provisioner) EnsureUser(ctx context.Context, identity ProviderIdentity,
 	if identity.Name != "" {
 		attrs["name"] = identity.Name
 	}
-	if err := p.graph.graph.PutEntity(ctx, &nexus.Entity{ID: subject, Type: p.userType, Attrs: attrs}); err != nil {
-		return "", "", fmt.Errorf("census: create subject: %w", err)
+	if err := tx.PutEntity(ctx, &nexus.Entity{ID: subject, Type: p.userType, Attrs: attrs}); err != nil {
+		return "", fmt.Errorf("census: create subject: %w", err)
 	}
-	if err := p.graph.Grant(ctx, subject, identity.ProviderUserID, idEdge, nil, meta); err != nil {
-		return "", "", fmt.Errorf("census: grant identity edge: %w", err)
-	}
-	if err := p.graph.Grant(ctx, subject, partition, p.membershipEdge, copyAttrs(p.membershipAttrs), meta); err != nil {
-		return "", "", fmt.Errorf("census: grant membership: %w", err)
-	}
-	return subject, partition, nil
+	return subject, nil
 }
 
 // PartitionNameAttr is the partition entity's attribute holding the name the
@@ -333,16 +381,9 @@ func (p *Provisioner) FoundNamed(ctx context.Context, identity ProviderIdentity,
 		if err := tx.PutEntity(ctx, minted); err != nil {
 			return fmt.Errorf("census: mint partition: %w", err)
 		}
-		subject = tx.newID()
-		attrs := map[string]string{}
-		if identity.Email != "" {
-			attrs["email"] = identity.Email
-		}
-		if identity.Name != "" {
-			attrs["name"] = identity.Name
-		}
-		if err := tx.PutEntity(ctx, &nexus.Entity{ID: subject, Type: p.userType, Attrs: attrs}); err != nil {
-			return fmt.Errorf("census: create subject: %w", err)
+		subject, err = p.putSubject(ctx, tx, identity)
+		if err != nil {
+			return err
 		}
 		meta := ChangeMeta{Partition: partition, Trigger: "found", Source: identity.Provider}
 		if err := tx.Grant(ctx, subject, identity.ProviderUserID, idEdge, identityEdgeAttrs(identity), meta); err != nil {
