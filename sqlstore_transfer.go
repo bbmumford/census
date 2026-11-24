@@ -22,7 +22,7 @@ var _ TransferLog = (*SQLTransferLog)(nil)
 func (l *SQLTransferLog) InitSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS censusTransfers (
-			id TEXT PRIMARY KEY, partition TEXT NOT NULL DEFAULT '', fromId TEXT NOT NULL DEFAULT '',
+			id TEXT PRIMARY KEY, partitionId TEXT NOT NULL DEFAULT '', fromId TEXT NOT NULL DEFAULT '',
 			toId TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT '', change TEXT NOT NULL DEFAULT '',
 			trigger TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', auto INTEGER NOT NULL DEFAULT 0,
 			at INTEGER NOT NULL DEFAULT 0, seq INTEGER
@@ -52,7 +52,7 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 	// seq is the next monotonic ordinal so List returns events in the order recorded, tie-breaking a
 	// shared `at`. COALESCE(MAX,0)+1 is evaluated in the same statement.
 	_, err := l.db.ExecContext(ctx, `INSERT INTO censusTransfers
-		(id, partition, fromId, toId, type, change, trigger, source, auto, at, seq)
+		(id, partitionId, fromId, toId, type, change, trigger, source, auto, at, seq)
 		VALUES (?,?,?,?,?,?,?,?,?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM censusTransfers))`,
 		e.ID, e.Partition, e.From, e.To, e.Type, e.Change, e.Trigger, e.Source, auto, tnanos(e.At))
 	return err
@@ -64,7 +64,7 @@ func (l *SQLTransferLog) Record(ctx context.Context, e *TransferEvent) error {
 // provenance — an audit read that names no partition comes back empty, it does not come back complete.
 func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]*TransferEvent, error) {
 	rows, err := l.db.QueryContext(ctx, `SELECT `+transferColumns+` FROM censusTransfers
-		WHERE (? <> '' AND partition = ?) AND (fromId = ? OR toId = ?)
+		WHERE (? <> '' AND partitionId = ?) AND (fromId = ? OR toId = ?)
 		ORDER BY seq ASC`, partition, partition, entity, entity)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]
 }
 
 // transferColumns are the columns scanTransfers reads, in its order.
-const transferColumns = `id, partition, fromId, toId, type, change, trigger, source, auto, at, COALESCE(seq, 0)`
+const transferColumns = `id, partitionId, fromId, toId, type, change, trigger, source, auto, at, COALESCE(seq, 0)`
 
 func scanTransfers(rows *sql.Rows) ([]*TransferEvent, error) {
 	defer rows.Close()
@@ -124,7 +124,7 @@ var errEventNotUTF8 = errors.New("census: a transfer event field is not valid UT
 // transferRow is one event as RecordTx passes it to json_each.
 type transferRow struct {
 	ID        string `json:"id"`
-	Partition string `json:"partition"`
+	Partition string `json:"partitionId"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Type      string `json:"type"`
@@ -173,8 +173,8 @@ func (l *SQLTransferLog) RecordTx(ctx context.Context, tx *sql.Tx, events ...*Tr
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO censusTransfers
-		(id, partition, fromId, toId, type, change, trigger, source, auto, at, seq)
-		SELECT json_extract(j.value, '$.id'), json_extract(j.value, '$.partition'),
+		(id, partitionId, fromId, toId, type, change, trigger, source, auto, at, seq)
+		SELECT json_extract(j.value, '$.id'), json_extract(j.value, '$.partitionId'),
 			json_extract(j.value, '$.from'), json_extract(j.value, '$.to'), json_extract(j.value, '$.type'),
 			json_extract(j.value, '$.change'), json_extract(j.value, '$.trigger'),
 			json_extract(j.value, '$.source'), json_extract(j.value, '$.auto'), json_extract(j.value, '$.at'),
