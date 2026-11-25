@@ -87,23 +87,6 @@ func fromNullNanos(n sql.NullInt64) *time.Time {
 	return &t
 }
 
-func jsonStrMap(m map[string]string) string {
-	if len(m) == 0 {
-		return "{}"
-	}
-	b, _ := json.Marshal(m)
-	return string(b)
-}
-
-func readStrMapJSON(s string) map[string]string {
-	if s == "" || s == "{}" {
-		return nil
-	}
-	var m map[string]string
-	_ = json.Unmarshal([]byte(s), &m)
-	return m
-}
-
 func jsonSlice(v []string) string {
 	if len(v) == 0 {
 		return "[]"
