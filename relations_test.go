@@ -58,8 +58,12 @@ func TestGraph_CardinalityFloorBlocksLastEdge(t *testing.T) {
 	eachLog(t, func(t *testing.T, log TransferLog) {
 		s, g := newGraphServiceWith(t, log)
 		m := ChangeMeta{Partition: "acme"}
-		s.Grant(ctx, "user-1", "org-9", "partition", nil, m)
-		s.Grant(ctx, "user-2", "org-9", "partition", nil, m)
+		if err := s.Grant(ctx, "user-1", "org-9", "partition", nil, m); err != nil {
+			t.Fatalf("s.Grant: %v", err)
+		}
+		if err := s.Grant(ctx, "user-2", "org-9", "partition", nil, m); err != nil {
+			t.Fatalf("s.Grant: %v", err)
+		}
 		// two holders: removing one is allowed (the floor requires ≥1 remaining)
 		if err := s.RevokeKeepingMin(ctx, "user-1", "org-9", "partition", 1, m); err != nil {
 			t.Fatalf("removing one of two owners must be allowed; got %v", err)
@@ -84,9 +88,15 @@ func TestGraph_ResolveIsGeneral(t *testing.T) {
 	s, _ := newGraphServiceWith(t, NewMemTransferLog())
 	m := ChangeMeta{Partition: "acme"}
 	// graph: user-1 --member--> team-a --owns--> project-x ; user-1 --assignee--> ticket-7
-	s.Grant(ctx, "user-1", "team-a", "member", nil, m)
-	s.Grant(ctx, "team-a", "project-x", "owns", nil, m)
-	s.Grant(ctx, "user-1", "ticket-7", "assignee", nil, m)
+	if err := s.Grant(ctx, "user-1", "team-a", "member", nil, m); err != nil {
+		t.Fatalf("s.Grant: %v", err)
+	}
+	if err := s.Grant(ctx, "team-a", "project-x", "owns", nil, m); err != nil {
+		t.Fatalf("s.Grant: %v", err)
+	}
+	if err := s.Grant(ctx, "user-1", "ticket-7", "assignee", nil, m); err != nil {
+		t.Fatalf("s.Grant: %v", err)
+	}
 
 	// "what does user-1 own" — via their team (transitive rung)
 	owns, err := s.Resolve(ctx, "user-1", Via("member", OutTargets("owns")))
@@ -99,7 +109,9 @@ func TestGraph_ResolveIsGeneral(t *testing.T) {
 		t.Fatalf("assignment resolution (same primitive): %+v err=%v", assigned, err)
 	}
 	// a direct edge takes precedence over a transitive one when both are on the ladder
-	s.Grant(ctx, "user-1", "project-y", "owns", nil, m)
+	if err := s.Grant(ctx, "user-1", "project-y", "owns", nil, m); err != nil {
+		t.Fatalf("s.Grant: %v", err)
+	}
 	direct, _ := s.Resolve(ctx, "user-1", OutTargets("owns"), Via("member", OutTargets("owns")))
 	if !direct.Resolved || direct.Value != "project-y" {
 		t.Fatalf("a direct rung must win over a transitive one; got %+v", direct)

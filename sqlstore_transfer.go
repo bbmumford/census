@@ -76,7 +76,7 @@ func (l *SQLTransferLog) List(ctx context.Context, partition, entity string) ([]
 const transferColumns = `id, partitionId, fromId, toId, type, change, trigger, source, auto, at, COALESCE(seq, 0)`
 
 func scanTransfers(rows *sql.Rows) ([]*TransferEvent, error) {
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*TransferEvent
 	for rows.Next() {
 		var e TransferEvent

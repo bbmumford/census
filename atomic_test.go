@@ -436,7 +436,11 @@ func TestSQLTransferLog_SinceHasItsIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("rows.Close: %v", err)
+		}
+	}()
 	for rows.Next() {
 		var id, parent, unused int
 		var detail string

@@ -135,7 +135,7 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackUnlessCommitted(tx)
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM censusCredentials
 		WHERE kind = ? AND identifierHash = ? AND id != ?`, c.Kind, c.IdentifierHash, c.ID).Scan(&n); err != nil {
@@ -185,7 +185,7 @@ func (s *SQLVaultStore) ListCredentialsBySubject(ctx context.Context, partition,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*Credential
 	for rows.Next() {
 		c, err := scanCredential(rows)
@@ -257,7 +257,7 @@ func (s *SQLVaultStore) ListAPIKeysBySubject(ctx context.Context, partition, sub
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 	var out []*APIKey
 	for rows.Next() {
 		k, err := scanAPIKey(rows)
@@ -285,3 +285,14 @@ func (s *SQLVaultStore) TouchAPIKeyUsed(ctx context.Context, id string, usedAt i
 	_, err := s.db.ExecContext(ctx, `UPDATE censusApiKeys SET lastUsedAt = ? WHERE id = ?`, usedAt, id)
 	return err
 }
+
+// rollbackUnlessCommitted is the deferred Rollback of every transaction in this
+// package. After Commit it returns sql.ErrTxDone, and an early return already
+// carries the error that stopped the transaction; its result is dropped.
+func rollbackUnlessCommitted(tx *sql.Tx) { _ = tx.Rollback() }
+
+// closeRows is the deferred Close of every query's rows in this package.
+// database/sql closes rows itself once Next reports the end, so a normal return
+// leaves nothing to close, and an early return already carries the error that
+// stopped the read; its result is dropped.
+func closeRows(rows *sql.Rows) { _ = rows.Close() }
