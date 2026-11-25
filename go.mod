@@ -3,7 +3,7 @@ module github.com/bbmumford/census
 go 1.25.0
 
 require (
-	github.com/bbmumford/nexus v0.0.0
+	github.com/bbmumford/nexus v0.1.0
 	modernc.org/sqlite v1.53.0
 )
 
@@ -18,5 +18,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/bbmumford/nexus => ../nexus
