@@ -3,6 +3,7 @@ package census
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/bbmumford/nexus"
@@ -29,6 +30,10 @@ var (
 	ErrGrantPartition = errors.New("census: grant resolution requires a partition")
 	ErrGrantGraph     = errors.New("census: grant resolution requires a graph")
 )
+
+// ErrGrantSeparator is returned by GrantAttrs for a capability holding grantSep, which the resolver
+// would read back as two capabilities: one authored string must not become a second grant.
+var ErrGrantSeparator = errors.New("census: a capability holds the grant separator")
 
 // GrantService answers what capability strings a subject holds in a partition.
 //
@@ -154,16 +159,22 @@ func splitGrants(raw string) []string {
 //
 // Blank capabilities are dropped. Passing none yields a nil map rather than an
 // edge with an empty grant string, so an edge that grants nothing is visibly
-// distinct from one whose grants failed to serialise.
-func GrantAttrs(capabilities ...string) map[string]string {
+// distinct from one whose grants failed to serialise. A capability holding the
+// separator is refused (ErrGrantSeparator) and no map is built: written, it
+// would resolve as the pieces on either side of the separator, each of which
+// may be a capability the author never granted.
+func GrantAttrs(capabilities ...string) (map[string]string, error) {
 	kept := make([]string, 0, len(capabilities))
 	for _, c := range capabilities {
+		if strings.Contains(c, grantSep) {
+			return nil, fmt.Errorf("%w: %q", ErrGrantSeparator, c)
+		}
 		if c = strings.TrimSpace(c); c != "" {
 			kept = append(kept, c)
 		}
 	}
 	if len(kept) == 0 {
-		return nil
+		return nil, nil
 	}
-	return map[string]string{GrantAttr: strings.Join(kept, grantSep)}
+	return map[string]string{GrantAttr: strings.Join(kept, grantSep)}, nil
 }

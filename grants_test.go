@@ -85,7 +85,7 @@ func TestGrantService_RefusesBeforeReading(t *testing.T) {
 // above would pass on a service that can never resolve anything.
 func TestGrantService_ResolvesAGrant(t *testing.T) {
 	g := graphWith(t, nexus.Relationship{
-		From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read", "b.write"),
+		From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read", "b.write"),
 	})
 	got, err := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if err != nil {
@@ -101,9 +101,9 @@ func TestGrantService_ResolvesAGrant(t *testing.T) {
 // first edge's grants, silently dropping the rest.
 func TestGrantService_UnionsAcrossEdges(t *testing.T) {
 	g := graphWith(t,
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read")},
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "operator", Attrs: GrantAttrs("b.write")},
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "auditor", Attrs: GrantAttrs("c.list")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "operator", Attrs: grantAttrs(t, "b.write")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "auditor", Attrs: grantAttrs(t, "c.list")},
 	)
 	got, err := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if err != nil {
@@ -123,8 +123,8 @@ func TestGrantService_UnionsAcrossEdges(t *testing.T) {
 // capability in one partition must not satisfy a check in another.
 func TestGrantService_OtherPartitionsNeverCount(t *testing.T) {
 	g := graphWith(t,
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("mine.read")},
-		nexus.Relationship{From: "s-1", To: "p-2", Type: "member", Attrs: GrantAttrs("theirs.admin")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "mine.read")},
+		nexus.Relationship{From: "s-1", To: "p-2", Type: "member", Attrs: grantAttrs(t, "theirs.admin")},
 	)
 	got, err := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if err != nil {
@@ -143,8 +143,8 @@ func TestGrantService_OtherPartitionsNeverCount(t *testing.T) {
 // being resolved away here.
 func TestGrantService_DeniesSurviveVerbatim(t *testing.T) {
 	g := graphWith(t,
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read", "a.write")},
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "restriction", Attrs: GrantAttrs("-a.write")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read", "a.write")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "restriction", Attrs: grantAttrs(t, "-a.write")},
 	)
 	got, err := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if err != nil {
@@ -177,8 +177,8 @@ func TestGrantService_GraphErrorIsNotAnEmptyResult(t *testing.T) {
 // does not contribute capabilities when the consumer names its grant types.
 func TestGrantService_EdgeTypeFilter(t *testing.T) {
 	g := graphWith(t,
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read")},
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "routing", Attrs: GrantAttrs("should.not.count")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "routing", Attrs: grantAttrs(t, "should.not.count")},
 	)
 	got, err := mustService(t, g, "member").Resolve(context.Background(), "p-1", "s-1")
 	if err != nil {
@@ -196,8 +196,8 @@ func TestGrantService_EdgeTypeFilter(t *testing.T) {
 // arriving twice, which would otherwise make a held-count meaningless.
 func TestGrantService_DeduplicatesAcrossEdges(t *testing.T) {
 	g := graphWith(t,
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read")},
-		nexus.Relationship{From: "s-1", To: "p-1", Type: "operator", Attrs: GrantAttrs("a.read")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read")},
+		nexus.Relationship{From: "s-1", To: "p-1", Type: "operator", Attrs: grantAttrs(t, "a.read")},
 	)
 	got, _ := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if len(got) != 1 {
@@ -235,19 +235,29 @@ func TestNewGrantService_RefusesANilGraph(t *testing.T) {
 // TestGrantAttrs pins the authoring helper against the resolver that reads it:
 // whatever GrantAttrs writes, Resolve must return.
 func TestGrantAttrs(t *testing.T) {
-	if got := GrantAttrs(); got != nil {
-		t.Fatalf("GrantAttrs() = %v, want nil for no capabilities", got)
+	if got, err := GrantAttrs(); got != nil || err != nil {
+		t.Fatalf("GrantAttrs() = %v, %v, want nil for no capabilities", got, err)
 	}
-	if got := GrantAttrs("  ", ""); got != nil {
-		t.Fatalf("GrantAttrs(blanks) = %v, want nil", got)
+	if got, err := GrantAttrs("  ", ""); got != nil || err != nil {
+		t.Fatalf("GrantAttrs(blanks) = %v, %v, want nil", got, err)
 	}
 	g := graphWith(t, nexus.Relationship{
-		From: "s-1", To: "p-1", Type: "member", Attrs: GrantAttrs("a.read", "  ", "b.write"),
+		From: "s-1", To: "p-1", Type: "member", Attrs: grantAttrs(t, "a.read", "  ", "b.write"),
 	})
 	got, _ := mustService(t, g).Resolve(context.Background(), "p-1", "s-1")
 	if len(got) != 2 {
 		t.Fatalf("round trip = %v, want the two non-blank capabilities", got)
 	}
+}
+
+// grantAttrs is GrantAttrs for a test's own capabilities, failing the test on a refusal.
+func grantAttrs(t *testing.T, capabilities ...string) map[string]string {
+	t.Helper()
+	attrs, err := GrantAttrs(capabilities...)
+	if err != nil {
+		t.Fatalf("GrantAttrs(%q): %v", capabilities, err)
+	}
+	return attrs
 }
 
 func contains(hay []string, needle string) bool {
