@@ -24,6 +24,9 @@ type Service struct {
 	now      func() time.Time
 	newToken func() string
 	newKey   func() string
+	// identifierKey keys every login-identifier digest (identifierDigest); nil for a Service built
+	// with no Config.IdentifierKey.
+	identifierKey []byte
 	// missDigest is the Hasher's digest of a random secret nobody holds. Authenticate and
 	// RedeemBackupCode compare against it where no stored digest exists, so an unknown identifier
 	// or a subject with no backup codes costs the same Hasher work as a known one and a probe
@@ -46,6 +49,12 @@ type Config struct {
 	// 32 random bytes hex and are injectable for tests.
 	NewToken func() string
 	NewKey   func() string
+	// IdentifierKey is the key material login identifiers are digested under: the Service derives
+	// its HMAC-SHA256 key from it by HKDF-SHA256 under IdentifierKeyLabel, so a password's stored
+	// identifier is HMAC of the normalised address and whoever reads the table cannot test
+	// addresses against it offline. At least MinIdentifierKeyBytes when set; every Service opening
+	// one vault passes the same material, since each looks up identifiers another registered.
+	IdentifierKey []byte
 }
 
 // NewService validates the config and returns the Service.
@@ -59,11 +68,22 @@ func NewService(c Config) (*Service, error) {
 	if c.Hasher == nil {
 		return nil, &configError{"census: Config.Hasher is required (passwords must never be stored in the clear)"}
 	}
+	var idKey []byte
+	if len(c.IdentifierKey) > 0 {
+		if len(c.IdentifierKey) < MinIdentifierKeyBytes {
+			return nil, ErrIdentifierKey
+		}
+		k, err := identifierKey(c.IdentifierKey)
+		if err != nil {
+			return nil, err
+		}
+		idKey = k
+	}
 	missDigest, err := c.Hasher.Hash(randomToken())
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, codes: c.Codes, now: c.Now, newToken: c.NewToken, newKey: c.NewKey, missDigest: missDigest}
+	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, codes: c.Codes, now: c.Now, newToken: c.NewToken, newKey: c.NewKey, missDigest: missDigest, identifierKey: idKey}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -87,7 +107,7 @@ var ErrExpired = errors.New("census: expired")
 // ── Credentials ──
 
 // RegisterPassword creates a password credential binding an opaque subject to a login identifier. The
-// identifier (email/username) is normalized and stored only as a deterministic hash; the password is
+// identifier (email/username) is normalized and stored only as its digest (identifierDigest); the password is
 // stored only as the injected Hasher's digest. A duplicate identifier for the kind returns ErrConflict,
 // and an empty partition ErrUnscoped before anything is hashed or written.
 func (s *Service) RegisterPassword(ctx context.Context, partition, subject, identifier, password string) (*Credential, error) {
@@ -103,7 +123,7 @@ func (s *Service) RegisterPassword(ctx context.Context, partition, subject, iden
 		Partition:      partition,
 		Subject:        subject,
 		Kind:           "password",
-		IdentifierHash: hashHex(normalizeEmail(identifier)),
+		IdentifierHash: identifierDigest(s.identifierKey, identifier),
 		Secret:         digest,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -117,7 +137,7 @@ func (s *Service) RegisterPassword(ctx context.Context, partition, subject, iden
 // Authenticate verifies a password against the stored credential for an identifier and returns the
 // authenticated subject id. An unknown identifier and a wrong password both return ErrInvalidCredential.
 func (s *Service) Authenticate(ctx context.Context, identifier, password string) (subject string, err error) {
-	c, err := s.store.GetCredentialByIdentifier(ctx, "password", hashHex(normalizeEmail(identifier)))
+	c, err := s.store.GetCredentialByIdentifier(ctx, "password", identifierDigest(s.identifierKey, identifier))
 	if errors.Is(err, ErrNotFound) {
 		s.hasher.Compare(s.missDigest, password)
 		return "", ErrInvalidCredential

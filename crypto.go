@@ -1,9 +1,12 @@
 package census
 
 import (
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 )
 
@@ -32,6 +35,40 @@ type Hasher interface {
 func hashHex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// IdentifierKeyLabel is the HKDF-SHA256 info a Service derives its login-identifier key under from
+// Config.IdentifierKey. The label separates the purpose: key material a deployment already holds
+// for another lookup digest yields, under it, a key whose digests never match that lookup's.
+const IdentifierKeyLabel = "census-login-identifier-v1"
+
+// MinIdentifierKeyBytes is the shortest Config.IdentifierKey a Service accepts: the width of the
+// HMAC-SHA256 output it keys.
+const MinIdentifierKeyBytes = 32
+
+// ErrIdentifierKey is returned by NewService for a Config.IdentifierKey shorter than
+// MinIdentifierKeyBytes.
+var ErrIdentifierKey = errors.New("census: the login-identifier key holds fewer than 32 bytes")
+
+// identifierKey derives the HMAC-SHA256 key login identifiers are digested under from material.
+func identifierKey(material []byte) ([]byte, error) {
+	return hkdf.Key(sha256.New, material, nil, IdentifierKeyLabel, sha256.Size)
+}
+
+// identifierDigest is what a credential stores of a login identifier, and what a login looks it up
+// by: HMAC-SHA256 of the normalised identifier under key, in hex. A party that can read the table
+// cannot test a guessed address against a row without the key. A nil key is the unkeyed form, the
+// identifier's SHA-256, for a Service built with no Config.IdentifierKey.
+//
+// TODO: the nil key form goes when every opener of a census vault passes Config.IdentifierKey.
+func identifierDigest(key []byte, identifier string) string {
+	n := normalizeEmail(identifier)
+	if key == nil {
+		return hashHex(n)
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(n))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // randomToken mints a raw 32-byte token (hex). Injectable on each service for tests.
