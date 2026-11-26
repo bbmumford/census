@@ -49,6 +49,7 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 			PRIMARY KEY (subject, step)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idxCensusSpentSubject ON censusSpentSteps(partitionId, subject)`,
+		`CREATE INDEX IF NOT EXISTS idxCensusSpentStepAt ON censusSpentSteps(spentAt)`,
 		`CREATE TABLE IF NOT EXISTS censusApiKeys (
 			id TEXT PRIMARY KEY, partitionId TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
 			label TEXT NOT NULL DEFAULT '', keyHash TEXT NOT NULL DEFAULT '',

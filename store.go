@@ -49,7 +49,11 @@ type VaultStore interface {
 	// two requests arriving together with one stolen code is the case it exists for, so a
 	// read-then-write admits exactly that. The key is (subject, step) and not (partition, subject,
 	// step), because a code valid for a subject is spendable once however many partitions' requests
-	// present it; partition is carried so DeleteSpentSteps can clear a subject's rows.
+	// present it; partition is carried so DeleteSpentSteps can clear a subject's rows. spentAt is
+	// the instant of use in Unix nanoseconds, and every call first deletes the steps, of any
+	// subject, spent more than SpentStepRetention before it: a code is accepted only near its own
+	// time step, so a step that old refuses nothing a verifier would still accept, and keeping it
+	// would grow the record by one row per accepted code forever.
 	SpendStep(ctx context.Context, partition, subject string, step, spentAt int64) (first bool, err error)
 	// DeleteSpentSteps drops every step a subject has spent, so a replacement secret is not refused
 	// for the window its predecessor already spent.

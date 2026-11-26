@@ -7,7 +7,8 @@ import "context"
 // semantic reference these two have to match; eachVault runs every case against
 // both.
 
-// SpendStep inserts the step and reports whether this call placed it.
+// SpendStep prunes the steps spent before the retention, then inserts the step and reports whether
+// this call placed it.
 //
 // The insert IS the test: a conditional insert decided by the row's own primary
 // key cannot admit two callers, where a SELECT followed by an INSERT would answer
@@ -17,6 +18,9 @@ import "context"
 func (s *SQLVaultStore) SpendStep(ctx context.Context, partition, subject string, step, spentAt int64) (bool, error) {
 	if partition == "" {
 		return false, ErrUnscoped
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM censusSpentSteps WHERE spentAt < ?`, spentAt-int64(SpentStepRetention)); err != nil {
+		return false, err
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO censusSpentSteps (subject, step, partitionId, spentAt)
 		VALUES (?,?,?,?) ON CONFLICT(subject, step) DO NOTHING`, subject, step, partition, spentAt)

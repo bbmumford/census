@@ -136,6 +136,11 @@ func (m *MemStore) SpendStep(_ context.Context, partition, subject string, step,
 	// The lock spans the read and the write, which is what the seam requires:
 	// two requests presenting one stolen code arrive together, and a
 	// read-then-write outside the lock would answer first to both.
+	for old, rec := range m.spentSteps {
+		if rec.at < spentAt-int64(SpentStepRetention) {
+			delete(m.spentSteps, old)
+		}
+	}
 	k := spentStep{subject: subject, step: step}
 	if _, seen := m.spentSteps[k]; seen {
 		return false, nil

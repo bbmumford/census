@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 )
 
 // KindTOTP and KindBackupCode are the Credential.Kind values the methods below
@@ -26,6 +27,11 @@ const (
 // failed attempt. Reporting both the same way would send an operator to the
 // subject's authenticator for a fault that is in the caller.
 var ErrNoFactor = errors.New("census: no time-step factor is enrolled for this subject")
+
+// SpentStepRetention is how long a spent time step is kept (VaultStore.SpendStep). It is far
+// longer than any window a time-step verifier accepts a code in, so a pruned step is one no
+// verifier would accept again.
+const SpentStepRetention = 24 * time.Hour
 
 // ErrUnscoped is returned when a write carries no partition: a password, an API
 // key, a second factor or a spent step, at the Service and at either store.
