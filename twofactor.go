@@ -311,7 +311,10 @@ func (s *Service) BackupCodesRemaining(ctx context.Context, partition, subject s
 // the record, so leaving the row and marking it elsewhere would need a second
 // record that the compare path does not read. An unknown code and an unknown
 // subject both answer ErrInvalidCredential, the way Authenticate does, so a
-// probe cannot tell a wrong code from a subject with no set.
+// probe cannot tell a wrong code from a subject with no set, and both cost the
+// same Hasher work: the code is compared against every row of the set with no
+// early stop, and against a digest nobody holds until at least
+// backupCompareFloor compares have run.
 func (s *Service) RedeemBackupCode(ctx context.Context, partition, subject, code string) error {
 	if partition == "" {
 		return ErrUnscoped
@@ -323,19 +326,35 @@ func (s *Service) RedeemBackupCode(ctx context.Context, partition, subject, code
 	if err != nil {
 		return err
 	}
+	var matched *Credential
+	compares := 0
 	for _, c := range rows {
-		if c.Kind != KindBackupCode || !s.hasher.Compare(c.Secret, code) {
+		if c.Kind != KindBackupCode {
 			continue
 		}
-		if err := s.store.DeleteCredential(ctx, partition, c.ID); err != nil {
-			if errors.Is(err, ErrNotFound) {
-				// Another request redeemed this row between the list and the
-				// delete, so this one is not the first to present the code.
-				return ErrInvalidCredential
-			}
-			return err
+		compares++
+		if s.hasher.Compare(c.Secret, code) && matched == nil {
+			matched = c
 		}
-		return nil
 	}
-	return ErrInvalidCredential
+	for ; compares < backupCompareFloor; compares++ {
+		s.hasher.Compare(s.missDigest, code)
+	}
+	if matched == nil {
+		return ErrInvalidCredential
+	}
+	if err := s.store.DeleteCredential(ctx, partition, matched.ID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Another request redeemed this row between the list and the
+			// delete, so this one is not the first to present the code.
+			return ErrInvalidCredential
+		}
+		return err
+	}
+	return nil
 }
+
+// backupCompareFloor is the fewest Hasher compares RedeemBackupCode runs, whatever the subject's set
+// holds: the size of the sets the login hosts issue, so a subject with no set, or one whose set is
+// part spent, takes as long to refuse as one holding a whole set.
+const backupCompareFloor = 10

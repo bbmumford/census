@@ -24,6 +24,11 @@ type Service struct {
 	now      func() time.Time
 	newToken func() string
 	newKey   func() string
+	// missDigest is the Hasher's digest of a random secret nobody holds. Authenticate and
+	// RedeemBackupCode compare against it where no stored digest exists, so an unknown identifier
+	// or a subject with no backup codes costs the same Hasher work as a known one and a probe
+	// cannot tell them apart by time.
+	missDigest string
 }
 
 // Config wires a Service. Store, Encryptor, and Hasher are required — emails must be encrypted at rest
@@ -54,7 +59,11 @@ func NewService(c Config) (*Service, error) {
 	if c.Hasher == nil {
 		return nil, &configError{"census: Config.Hasher is required (passwords must never be stored in the clear)"}
 	}
-	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, codes: c.Codes, now: c.Now, newToken: c.NewToken, newKey: c.NewKey}
+	missDigest, err := c.Hasher.Hash(randomToken())
+	if err != nil {
+		return nil, err
+	}
+	s := &Service{store: c.Store, enc: c.Encryptor, hasher: c.Hasher, codes: c.Codes, now: c.Now, newToken: c.NewToken, newKey: c.NewKey, missDigest: missDigest}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -68,7 +77,8 @@ func NewService(c Config) (*Service, error) {
 }
 
 // ErrInvalidCredential is returned by Authenticate when the identifier is unknown or the secret is
-// wrong — the two are indistinguishable to the caller so a probe cannot enumerate identifiers.
+// wrong — the two are indistinguishable to the caller so a probe cannot enumerate identifiers: an
+// unknown identifier is compared against a digest nobody holds, so both run the Hasher once.
 var ErrInvalidCredential = errors.New("census: invalid credential")
 
 // ErrExpired is returned when a token has passed its expiry.
@@ -109,6 +119,7 @@ func (s *Service) RegisterPassword(ctx context.Context, partition, subject, iden
 func (s *Service) Authenticate(ctx context.Context, identifier, password string) (subject string, err error) {
 	c, err := s.store.GetCredentialByIdentifier(ctx, "password", hashHex(normalizeEmail(identifier)))
 	if errors.Is(err, ErrNotFound) {
+		s.hasher.Compare(s.missDigest, password)
 		return "", ErrInvalidCredential
 	}
 	if err != nil {
