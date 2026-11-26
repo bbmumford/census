@@ -192,23 +192,11 @@ func TestBackupCodes_AcceptedOnceAndReplaced(t *testing.T) {
 // partition therefore has to clear the steps the row it replaces spent, or a
 // correct code from the new secret is refused as a replay for the rest of the
 // window the old one spent.
-func TestTOTP_AReplacementUnderASecondPartitionClearsTheStepsTheOldRowSpent(t *testing.T) {
+func TestTOTP_AReplacementInItsPartitionClearsTheStepsTheOldRowSpent(t *testing.T) {
 	eachVault(t, func(t *testing.T, store VaultStore) {
 		s := newServiceWith(t, store)
-		if _, err := s.EnrolTOTP(ctx, "part_1", "usr_1", "JBSWY3DPEHPK3PXP"); err != nil {
-			t.Fatal(err)
-		}
-		if first, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil || !first {
-			t.Fatalf("the first spend under part_1 = %v, %v; want true, nil", first, err)
-		}
-		if _, err := s.EnrolTOTP(ctx, "part_2", "usr_1", "NEWSECRET234567A"); err != nil {
-			t.Fatalf("re-enrol under a second partition: %v", err)
-		}
-		if first, err := s.SpendTOTPStep(ctx, "usr_1", 58000000); err != nil || !first {
-			t.Fatalf("the replacement's own first spend of that step = %v, %v; want true, nil", first, err)
-		}
-		// The same clear still holds when both enrolments name one partition, which
-		// is the ordinary path: the second call must not leave the first's steps.
+		// Both enrolments name one partition, which is the ordinary path: the second
+		// call must not leave the first's steps.
 		if _, err := s.EnrolTOTP(ctx, "part_2", "usr_2", "JBSWY3DPEHPK3PXP"); err != nil {
 			t.Fatal(err)
 		}

@@ -79,13 +79,17 @@ func backupIdentifier(subject string, position int) string {
 // Conditions:
 //   - an empty partition, subject or secret is refused (ErrUnscoped for the
 //     partition), before anything is written;
-//   - a subject already holding a factor has it replaced in place, re-putting
-//     the row totpIdentifier names;
+//   - a subject already holding a factor in this partition has it replaced in
+//     place, re-putting the row totpIdentifier names;
+//   - A FACTOR HELD UNDER ANOTHER PARTITION IS ErrConflict, and nothing is
+//     written, the rule DeleteTOTP and ReplaceBackupCodes hold too: a request in
+//     one partition neither replaces, removes nor overwrites a second factor
+//     another partition wrote. totpIdentifier holds no partition, so the lookup
+//     reaches the row whatever partition wrote it; re-putting it here would move
+//     it out of reach of the partition that enrolled it, whose DeleteTOTP would
+//     then refuse;
 //   - the subject's spent steps go with the replacement, because SpendTOTPStep
-//     keys on (subject, step) and not on the secret. The clear runs for the
-//     partition the replaced row carried as well as for this one: totpIdentifier
-//     holds no partition, so the row this re-put reaches may have been written
-//     under another, and DeleteSpentSteps matches only the partition it is given.
+//     keys on (subject, step) and not on the secret.
 func (s *Service) EnrolTOTP(ctx context.Context, partition, subject, secret string) (*Credential, error) {
 	if partition == "" {
 		return nil, ErrUnscoped
@@ -108,23 +112,19 @@ func (s *Service) EnrolTOTP(ctx context.Context, partition, subject, secret stri
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	replaced := ""
 	if existing, err := s.store.GetCredentialByIdentifier(ctx, KindTOTP, identifier); err == nil {
-		c.ID, c.CreatedAt, replaced = existing.ID, existing.CreatedAt, existing.Partition
+		if existing.Partition != partition {
+			return nil, ErrConflict
+		}
+		c.ID, c.CreatedAt = existing.ID, existing.CreatedAt
 	} else if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	if err := s.store.PutCredential(ctx, c); err != nil {
 		return nil, err
 	}
-	scopes := []string{partition}
-	if replaced != "" && replaced != partition {
-		scopes = append(scopes, replaced)
-	}
-	for _, p := range scopes {
-		if err := s.store.DeleteSpentSteps(ctx, p, subject); err != nil {
-			return nil, err
-		}
+	if err := s.store.DeleteSpentSteps(ctx, partition, subject); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
