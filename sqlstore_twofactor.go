@@ -15,6 +15,9 @@ import "context"
 // written rather than a driver-specific OR IGNORE so the one statement holds on
 // every database/sql driver this store is opened over.
 func (s *SQLVaultStore) SpendStep(ctx context.Context, partition, subject string, step, spentAt int64) (bool, error) {
+	if partition == "" {
+		return false, ErrUnscoped
+	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO censusSpentSteps (subject, step, partitionId, spentAt)
 		VALUES (?,?,?,?) ON CONFLICT(subject, step) DO NOTHING`, subject, step, partition, spentAt)
 	if err != nil {

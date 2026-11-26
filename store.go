@@ -24,6 +24,8 @@ var ErrConflict = errors.New("census: conflict")
 // mesh-RPC gateway, or the reference MemStore.
 type VaultStore interface {
 	// ── Credentials ──
+	// PutCredential, PutAPIKey and SpendStep refuse a row with no partition (ErrUnscoped) before
+	// anything is written: every list, revoke and delete of what they write is partition-scoped.
 	PutCredential(ctx context.Context, c *Credential) error
 	// GetCredentialByIdentifier finds a credential of a kind by its identifier hash (the login lookup).
 	GetCredentialByIdentifier(ctx context.Context, kind, identifierHash string) (*Credential, error)

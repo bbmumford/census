@@ -78,8 +78,12 @@ var ErrExpired = errors.New("census: expired")
 
 // RegisterPassword creates a password credential binding an opaque subject to a login identifier. The
 // identifier (email/username) is normalized and stored only as a deterministic hash; the password is
-// stored only as the injected Hasher's digest. A duplicate identifier for the kind returns ErrConflict.
+// stored only as the injected Hasher's digest. A duplicate identifier for the kind returns ErrConflict,
+// and an empty partition ErrUnscoped before anything is hashed or written.
 func (s *Service) RegisterPassword(ctx context.Context, partition, subject, identifier, password string) (*Credential, error) {
+	if partition == "" {
+		return nil, ErrUnscoped
+	}
 	digest, err := s.hasher.Hash(password)
 	if err != nil {
 		return nil, err
@@ -229,6 +233,9 @@ func (s *Service) SpendID(ctx context.Context, id string, expiresAt time.Time) (
 // MintAPIKey creates a non-interactive key for a subject with an opaque capability set. The RAW key is
 // returned once (never recoverable from the store, which holds only its hash).
 func (s *Service) MintAPIKey(ctx context.Context, partition, subject, label string, capabilities []string, ttl time.Duration) (rawKey string, key *APIKey, err error) {
+	if partition == "" {
+		return "", nil, ErrUnscoped
+	}
 	rawKey = s.newKey()
 	now := s.now()
 	key = &APIKey{

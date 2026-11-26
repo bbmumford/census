@@ -27,15 +27,16 @@ const (
 // subject's authenticator for a fault that is in the caller.
 var ErrNoFactor = errors.New("census: no time-step factor is enrolled for this subject")
 
-// ErrUnscoped is returned when a second-factor write carries no partition.
+// ErrUnscoped is returned when a write carries no partition: a password, an API
+// key, a second factor or a spent step, at the Service and at either store.
 //
-// Every row these methods write is cleared again by a partition-scoped delete
-// (DeleteTOTP, through the store's partition predicate, which denies an empty
-// partition), so a row stored under none could never be cleared: a step spent
-// under it
-// would refuse a correct code from a replacement secret for the rest of its
-// window.
-var ErrUnscoped = errors.New("census: a second-factor write requires the partition it is scoped to")
+// Every row these writes make is listed, revoked and cleared again only by a
+// partition-scoped read or delete, whose predicate denies an empty partition, so
+// a row stored under none could never be reached again: a password or key under
+// it would still authenticate, through the partition-free login and key lookups,
+// with nothing able to remove it, and a step spent under it would refuse a
+// correct code from a replacement secret for the rest of its window.
+var ErrUnscoped = errors.New("census: a write requires the partition it is scoped to")
 
 // totpIdentifier is the lookup hash of a subject's one time-step credential.
 //

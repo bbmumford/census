@@ -55,6 +55,9 @@ func fromUnixNano(n int64) time.Time { return time.Unix(0, n).UTC() }
 // ── Credentials ──
 
 func (m *MemStore) PutCredential(_ context.Context, c *Credential) error {
+	if c.Partition == "" {
+		return ErrUnscoped
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// A credential identifier is unique per kind; a second subject cannot claim the same login.
@@ -125,6 +128,9 @@ type spentRecord struct {
 }
 
 func (m *MemStore) SpendStep(_ context.Context, partition, subject string, step, spentAt int64) (bool, error) {
+	if partition == "" {
+		return false, ErrUnscoped
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// The lock spans the read and the write, which is what the seam requires:
@@ -171,6 +177,9 @@ func (m *MemStore) SpendID(_ context.Context, id string, expiresAt, now int64) (
 // ── API keys ──
 
 func (m *MemStore) PutAPIKey(_ context.Context, k *APIKey) error {
+	if k.Partition == "" {
+		return ErrUnscoped
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if k.ID == "" {

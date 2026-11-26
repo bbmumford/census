@@ -107,6 +107,9 @@ func readSliceJSON(s string) []string {
 // ── Credentials ──
 
 func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error {
+	if c.Partition == "" {
+		return ErrUnscoped
+	}
 	if c.ID == "" {
 		c.ID = randomID()
 	}
@@ -195,6 +198,9 @@ func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id stri
 // ── API keys ──
 
 func (s *SQLVaultStore) PutAPIKey(ctx context.Context, k *APIKey) error {
+	if k.Partition == "" {
+		return ErrUnscoped
+	}
 	if k.ID == "" {
 		k.ID = randomID()
 	}
