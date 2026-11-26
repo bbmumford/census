@@ -1,6 +1,6 @@
 module github.com/bbmumford/census
 
-go 1.25.0
+go 1.27.4
 
 require (
 	github.com/bbmumford/nexus v0.1.0
