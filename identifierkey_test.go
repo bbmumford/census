@@ -22,7 +22,8 @@ func keyMaterial(b byte) []byte {
 
 // With an IdentifierKey a password's stored identifier is HMAC-SHA256 of the normalised address under
 // the key HKDF derives from the material, never the address's SHA-256; a Service holding the same
-// material finds it, and one holding other material does not.
+// material finds it, and one holding other material does not; a Service with no key, or a short
+// one, is refused.
 func TestLoginIdentifiersAreKeyedUnderTheDerivedKey(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
@@ -58,5 +59,8 @@ func TestLoginIdentifiersAreKeyedUnderTheDerivedKey(t *testing.T) {
 	}
 	if _, err := NewService(Config{Store: store, Encryptor: passEncryptor{}, Hasher: &comparingHasher{}, IdentifierKey: []byte("short")}); !errors.Is(err, ErrIdentifierKey) {
 		t.Fatalf("a short IdentifierKey = %v, want ErrIdentifierKey", err)
+	}
+	if _, err := NewService(Config{Store: store, Encryptor: passEncryptor{}, Hasher: &comparingHasher{}}); !errors.Is(err, ErrNoIdentifierKey) {
+		t.Fatalf("no IdentifierKey = %v, want ErrNoIdentifierKey", err)
 	}
 }

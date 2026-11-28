@@ -32,7 +32,7 @@ func (passEncryptor) Decrypt(c string) (string, error) { return c, nil }
 // probe which it got.
 func TestUnknownIdentifiersAndSetsCostTheSameHasherWork(t *testing.T) {
 	h := &comparingHasher{}
-	svc, err := NewService(Config{Store: NewMemStore(), Encryptor: passEncryptor{}, Hasher: h})
+	svc, err := NewService(Config{Store: NewMemStore(), Encryptor: passEncryptor{}, Hasher: h, IdentifierKey: testIdentifierKey})
 	if err != nil {
 		t.Fatal(err)
 	}

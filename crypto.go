@@ -55,6 +55,10 @@ const MinIdentifierKeyBytes = 32
 // MinIdentifierKeyBytes.
 var ErrIdentifierKey = errors.New("census: the login-identifier key holds fewer than 32 bytes")
 
+// ErrNoIdentifierKey is returned by NewService for a Config with no IdentifierKey: a Service that
+// digested login identifiers under no key would store each address's plain SHA-256.
+var ErrNoIdentifierKey = errors.New("census: Config.IdentifierKey is required (login identifiers are keyed)")
+
 // identifierKey derives the HMAC-SHA256 key login identifiers are digested under from material.
 func identifierKey(material []byte) ([]byte, error) {
 	return hkdf.Key(sha256.New, material, nil, IdentifierKeyLabel, sha256.Size)
@@ -62,17 +66,11 @@ func identifierKey(material []byte) ([]byte, error) {
 
 // identifierDigest is what a credential stores of a login identifier, and what a login looks it up
 // by: HMAC-SHA256 of the normalised identifier under key, in hex. A party that can read the table
-// cannot test a guessed address against a row without the key. A nil key is the unkeyed form, the
-// identifier's SHA-256, for a Service built with no Config.IdentifierKey.
-//
-// TODO: the nil key form goes when every opener of a census vault passes Config.IdentifierKey.
+// cannot test a guessed address against a row without the key. There is no unkeyed form: NewService
+// refuses a Config with no IdentifierKey.
 func identifierDigest(key []byte, identifier string) string {
-	n := normalizeEmail(identifier)
-	if key == nil {
-		return hashHex(n)
-	}
 	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(n))
+	mac.Write([]byte(normalizeEmail(identifier)))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

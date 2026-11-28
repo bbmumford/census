@@ -29,8 +29,7 @@ type Service struct {
 	now      func() time.Time
 	newToken func() string
 	newKey   func() string
-	// identifierKey keys every login-identifier digest (identifierDigest); nil for a Service built
-	// with no Config.IdentifierKey.
+	// identifierKey keys every login-identifier digest (identifierDigest).
 	identifierKey []byte
 	// missDigest is the Hasher's digest of a random secret nobody holds. Authenticate and
 	// RedeemBackupCode compare against it where no stored digest exists, so an unknown identifier
@@ -39,8 +38,8 @@ type Service struct {
 	missDigest string
 }
 
-// Config wires a Service. Store, Encryptor, and Hasher are required — emails must be encrypted at rest
-// and passwords must never be stored in the clear.
+// Config wires a Service. Store, Encryptor, Hasher and IdentifierKey are required — emails must be
+// encrypted at rest, passwords must never be stored in the clear, and login identifiers are keyed.
 type Config struct {
 	Store     VaultStore
 	Encryptor Encryptor
@@ -57,7 +56,7 @@ type Config struct {
 	// IdentifierKey is the key material login identifiers are digested under: the Service derives
 	// its HMAC-SHA256 key from it by HKDF-SHA256 under IdentifierKeyLabel, so a password's stored
 	// identifier is HMAC of the normalised address and whoever reads the table cannot test
-	// addresses against it offline. At least MinIdentifierKeyBytes when set; every Service opening
+	// addresses against it offline. Required, at least MinIdentifierKeyBytes; every Service opening
 	// one vault passes the same material, since each looks up identifiers another registered.
 	IdentifierKey []byte
 }
@@ -73,16 +72,15 @@ func NewService(c Config) (*Service, error) {
 	if c.Hasher == nil {
 		return nil, &configError{"census: Config.Hasher is required (passwords must never be stored in the clear)"}
 	}
-	var idKey []byte
-	if len(c.IdentifierKey) > 0 {
-		if len(c.IdentifierKey) < MinIdentifierKeyBytes {
-			return nil, ErrIdentifierKey
-		}
-		k, err := identifierKey(c.IdentifierKey)
-		if err != nil {
-			return nil, err
-		}
-		idKey = k
+	if len(c.IdentifierKey) == 0 {
+		return nil, ErrNoIdentifierKey
+	}
+	if len(c.IdentifierKey) < MinIdentifierKeyBytes {
+		return nil, ErrIdentifierKey
+	}
+	idKey, err := identifierKey(c.IdentifierKey)
+	if err != nil {
+		return nil, err
 	}
 	missDigest, err := c.Hasher.Hash(randomToken())
 	if err != nil {

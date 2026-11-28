@@ -56,7 +56,7 @@ func (fakeCodes) OpenEmailCode(code string, now time.Time) (EmailCode, error) {
 
 func newServiceWith(t *testing.T, store VaultStore) *Service {
 	t.Helper()
-	svc, err := NewService(Config{Store: store, Encryptor: revEncryptor{}, Hasher: plainHasher{}, Codes: fakeCodes{}})
+	svc, err := NewService(Config{Store: store, Encryptor: revEncryptor{}, Hasher: plainHasher{}, Codes: fakeCodes{}, IdentifierKey: testIdentifierKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,13 +66,13 @@ func newServiceWith(t *testing.T, store VaultStore) *Service {
 func fixedClock(s *Service, at time.Time) { s.now = func() time.Time { return at } }
 
 func TestConfig_RequiresSeams(t *testing.T) {
-	if _, err := NewService(Config{Encryptor: revEncryptor{}, Hasher: plainHasher{}}); err == nil {
+	if _, err := NewService(Config{Encryptor: revEncryptor{}, Hasher: plainHasher{}, IdentifierKey: testIdentifierKey}); err == nil {
 		t.Fatal("a nil Store must be rejected")
 	}
-	if _, err := NewService(Config{Store: NewMemStore(), Hasher: plainHasher{}}); err == nil {
+	if _, err := NewService(Config{Store: NewMemStore(), Hasher: plainHasher{}, IdentifierKey: testIdentifierKey}); err == nil {
 		t.Fatal("a nil Encryptor must be rejected — second-factor secrets must be encrypted at rest")
 	}
-	if _, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}}); err == nil {
+	if _, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, IdentifierKey: testIdentifierKey}); err == nil {
 		t.Fatal("a nil Hasher must be rejected — passwords must never be stored in the clear")
 	}
 }
@@ -168,7 +168,7 @@ func TestSpentIDsArePrunedAfterTheirExpiry(t *testing.T) {
 
 // A Service with no code signer issues and redeems no code, and says so.
 func TestEmailCodesNeedASigner(t *testing.T) {
-	s, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}})
+	s, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}, IdentifierKey: testIdentifierKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestVaultStore_EmptyPartitionReachesNothing(t *testing.T) {
 // Service.SpendID spends an id once until its expiry, through the store the email codes spend into,
 // and refuses an empty id.
 func TestServiceSpendIDSpendsOnce(t *testing.T) {
-	svc, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}})
+	svc, err := NewService(Config{Store: NewMemStore(), Encryptor: revEncryptor{}, Hasher: plainHasher{}, IdentifierKey: testIdentifierKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,3 +285,6 @@ func TestServiceSpendIDSpendsOnce(t *testing.T) {
 		t.Fatalf("empty id: err = %v, want ErrNoSpentID", err)
 	}
 }
+
+// testIdentifierKey is login-identifier key material of MinIdentifierKeyBytes bytes.
+var testIdentifierKey = []byte("0123456789abcdef0123456789abcdef")
