@@ -1,12 +1,13 @@
-// Package census is the scope-agnostic accounts system (extracted from the HSTLES identity domain). It
-// is a thin account-features service over an opaque entity-relationship graph: users, organisations,
+// Package census is the scope-agnostic accounts system. It is a thin account-features service over
+// an opaque entity-relationship graph: users, organisations,
 // teams, and projects are opaque graph entities, and memberships/roles/ownership are opaque typed
 // edges, so census interprets no axis — "org", "team", "user" are opaque type strings the consumer
 // assigns, resolved but never understood (the loom relationship to its payload). The graph mechanics +
 // precedence resolution live in the companion nexus package; this package adds the concrete account
 // FEATURES that carry secrets and cannot be opaque graph attributes: credentials, email codes
 // and API keys. Those reuse the proven crypto seam — a secret is encrypted at rest behind
-// an injected Encryptor with a separate deterministic hash for lookup/uniqueness, and raw API keys are
+// an injected Encryptor with a separate lookup digest for uniqueness (keyed, for a login
+// identifier), and raw API keys are
 // minted once and stored only as hashes; an email code is signed by the consumer's EmailCodeSigner and
 // not stored at all. The partition-scope is opaque; times are time.Time; a nil
 // *time.Time means "not yet".
