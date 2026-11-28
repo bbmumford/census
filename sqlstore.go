@@ -115,9 +115,12 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 		c.ID = randomID()
 	}
 	// A login identifier is unique per kind: a DIFFERENT credential claiming the same (kind,
-	// identifierHash) is ErrConflict. The same id re-puts (a password change). The check + upsert run
-	// in one transaction so the mapping is driver-agnostic (no reliance on parsing a driver's unique-
-	// violation error). The UNIQUE index backstops a concurrent race for integrity.
+	// identifierHash) is ErrConflict. The same id re-puts (a password change) within its own partition
+	// and subject only: a re-put naming a known id under another partition or subject is ErrConflict,
+	// since rewriting them would move the credential out of reach of the partition that wrote it,
+	// whose list and delete select by partition. The check + upsert run in one transaction so the
+	// mapping is driver-agnostic (no reliance on parsing a driver's unique-violation error). The
+	// UNIQUE index backstops a concurrent race for integrity.
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -131,12 +134,18 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 	if n > 0 {
 		return ErrConflict
 	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM censusCredentials
+		WHERE id = ? AND (partitionId != ? OR subject != ?)`, c.ID, c.Partition, c.Subject).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrConflict
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO censusCredentials
 		(id, partitionId, subject, kind, identifierHash, secret, createdAt, updatedAt)
 		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET partitionId=excluded.partitionId, subject=excluded.subject,
-			kind=excluded.kind, identifierHash=excluded.identifierHash, secret=excluded.secret,
-			updatedAt=excluded.updatedAt`,
+		ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, identifierHash=excluded.identifierHash,
+			secret=excluded.secret, updatedAt=excluded.updatedAt`,
 		c.ID, c.Partition, c.Subject, c.Kind, c.IdentifierHash, c.Secret, tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
 		return err
 	}

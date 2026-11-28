@@ -60,11 +60,15 @@ func (m *MemStore) PutCredential(_ context.Context, c *Credential) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// A credential identifier is unique per kind; a second subject cannot claim the same login.
+	// A credential identifier is unique per kind; a second subject cannot claim the same login. A
+	// re-put of a known id keeps its partition and subject, as SQLVaultStore's does.
 	for _, e := range m.credentials {
 		if e.Kind == c.Kind && e.IdentifierHash == c.IdentifierHash && e.ID != c.ID {
 			return ErrConflict
 		}
+	}
+	if e, ok := m.credentials[c.ID]; ok && c.ID != "" && (e.Partition != c.Partition || e.Subject != c.Subject) {
+		return ErrConflict
 	}
 	if c.ID == "" {
 		c.ID = m.newID()
