@@ -39,6 +39,7 @@ func NewMemStore() *MemStore {
 
 func randomID() string {
 	b := make([]byte, 16)
+	// crypto/rand.Read never returns an error under the go.mod's Go version: it ends the program instead.
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

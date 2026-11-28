@@ -291,7 +291,8 @@ func (s *Service) MintAPIKey(ctx context.Context, partition, subject, label stri
 }
 
 // VerifyAPIKey resolves a presented raw key to its record, records the use, and returns it. A revoked
-// or expired key returns ErrExpired; an unknown key returns ErrNotFound.
+// or expired key returns ErrExpired; an unknown key returns ErrNotFound. A use that cannot be recorded
+// is the store's error and the key is not returned, so a key is never admitted unrecorded.
 func (s *Service) VerifyAPIKey(ctx context.Context, rawKey string) (*APIKey, error) {
 	k, err := s.store.GetAPIKeyByHash(ctx, hashHex(rawKey))
 	if err != nil {
@@ -301,6 +302,8 @@ func (s *Service) VerifyAPIKey(ctx context.Context, rawKey string) (*APIKey, err
 	if k.RevokedAt != nil || (k.ExpiresAt != nil && now.After(*k.ExpiresAt)) {
 		return nil, ErrExpired
 	}
-	_ = s.store.TouchAPIKeyUsed(ctx, k.ID, now.UnixNano())
+	if err := s.store.TouchAPIKeyUsed(ctx, k.ID, now.UnixNano()); err != nil {
+		return nil, err
+	}
 	return k, nil
 }

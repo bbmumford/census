@@ -77,6 +77,7 @@ func identifierDigest(key []byte, identifier string) string {
 // randomToken mints a raw 32-byte token (hex). Injectable on each service for tests.
 func randomToken() string {
 	b := make([]byte, 32)
+	// crypto/rand.Read never returns an error under the go.mod's Go version: it ends the program instead.
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

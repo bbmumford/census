@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -97,17 +98,35 @@ func jsonSlice(v []string) string {
 	if len(v) == 0 {
 		return "[]"
 	}
+	// json.Marshal of a []string has no failing case (every string encodes, invalid UTF-8 as U+FFFD).
 	b, _ := json.Marshal(v)
 	return string(b)
 }
 
-func readSliceJSON(s string) []string {
+// readSliceJSON decodes a stored JSON string array. A stored value that is not one is an error, so a
+// corrupted row is reported rather than read as holding nothing.
+func readSliceJSON(s string) ([]string, error) {
 	if s == "" || s == "[]" {
-		return nil
+		return nil, nil
 	}
 	var v []string
-	_ = json.Unmarshal([]byte(s), &v)
-	return v
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// deletedOne reads a delete's or revoke's result: ErrNotFound when it changed no row, and the driver's
+// error when it cannot say, so a write that did happen is never reported as finding nothing.
+func deletedOne(res sql.Result) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ── Credentials ──
@@ -204,10 +223,7 @@ func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id stri
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return deletedOne(res)
 }
 
 // ── API keys ──
@@ -238,7 +254,10 @@ func scanAPIKey(sc interface{ Scan(...any) error }) (*APIKey, error) {
 		&expires, &revoked, &lastUsed); err != nil {
 		return nil, err
 	}
-	k.Capabilities = readSliceJSON(caps)
+	var err error
+	if k.Capabilities, err = readSliceJSON(caps); err != nil {
+		return nil, fmt.Errorf("census: api key %s capabilities: %w", k.ID, err)
+	}
 	k.CreatedAt = fromNanos(created)
 	k.ExpiresAt = fromNullNanos(expires)
 	k.RevokedAt = fromNullNanos(revoked)
@@ -279,10 +298,7 @@ func (s *SQLVaultStore) RevokeAPIKey(ctx context.Context, partition, id string, 
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return deletedOne(res)
 }
 
 func (s *SQLVaultStore) TouchAPIKeyUsed(ctx context.Context, id string, usedAt int64) error {
