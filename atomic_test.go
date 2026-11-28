@@ -432,9 +432,12 @@ func TestSQLTransferLog_SinceHasItsIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sqlText string
-	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idxCensusTransfersSeq'`).Scan(&sqlText)
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idxCensusTransfersSeqUnique'`).Scan(&sqlText)
 	if err != nil {
-		t.Fatalf("idxCensusTransfersSeq: %v", err)
+		t.Fatalf("idxCensusTransfersSeqUnique: %v", err)
+	}
+	if !strings.Contains(sqlText, "UNIQUE") {
+		t.Fatalf("the seq index is not unique: %s", sqlText)
 	}
 	var plan string
 	rows, err := db.QueryContext(ctx, `EXPLAIN QUERY PLAN SELECT id FROM censusTransfers WHERE seq > 0 ORDER BY seq LIMIT 5`)

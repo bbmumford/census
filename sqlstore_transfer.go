@@ -13,9 +13,11 @@ import (
 	"unicode/utf8"
 )
 
-// SQLTransferLog is the durable default TransferLog over any database/sql driver — the shipped
-// append-only sink for relationship-change provenance. Like SQLVaultStore it imports only stdlib
-// database/sql; the app supplies the driver + *sql.DB. Partition is opaque; "" on List matches nothing.
+// SQLTransferLog is the durable default TransferLog — the shipped append-only sink for relationship-change
+// provenance — over SQLite or libSQL through database/sql. Like SQLVaultStore it imports only stdlib
+// database/sql and the app supplies the driver + *sql.DB; RecordTx's INSERT … SELECT over json_each and
+// its read of the highest seq inside the caller's transaction need SQLite's one writer, which a
+// multi-writer database does not give. Partition is opaque; "" on List matches nothing.
 type SQLTransferLog struct{ db *sql.DB }
 
 // NewSQLTransferLog builds a log over an opened *sql.DB. Call InitSchema once before use.
@@ -35,8 +37,12 @@ func (l *SQLTransferLog) InitSchema(ctx context.Context) error {
 		// A monotonic sequence preserves record order for List even when two events share a timestamp.
 		`CREATE INDEX IF NOT EXISTS idxCensusTransfersFrom ON censusTransfers(fromId, seq)`,
 		`CREATE INDEX IF NOT EXISTS idxCensusTransfersTo ON censusTransfers(toId, seq)`,
-		// Since reads the log by seq alone, from a cursor, across every partition.
-		`CREATE INDEX IF NOT EXISTS idxCensusTransfersSeq ON censusTransfers(seq)`,
+		// Since reads the log by seq alone, from a cursor, across every partition, so no two events may
+		// share a seq: a reader paging with seq > cursor would skip the second. The index is UNIQUE so a
+		// write that would reuse one fails instead of committing. A database may hold a plain index over
+		// seq named idxCensusTransfersSeq; it is dropped so the UNIQUE index is the only one over seq.
+		`DROP INDEX IF EXISTS idxCensusTransfersSeq`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idxCensusTransfersSeqUnique ON censusTransfers(seq)`,
 	}
 	for _, q := range stmts {
 		if _, err := l.db.ExecContext(ctx, q); err != nil {

@@ -13,10 +13,10 @@ import (
 	"time"
 )
 
-// SQLVaultStore is the durable default VaultStore over any database/sql driver — the shipped standalone
-// store. The package imports only database/sql (stdlib); the APP supplies the opened *sql.DB and
-// registers the driver (go-libsql/Turso, modernc, Postgres), so census pulls no driver dependency yet
-// works out of the box. Partition is an opaque column the store filters on but never interprets; an empty
+// SQLVaultStore is the durable default VaultStore over SQLite or libSQL through database/sql — the
+// shipped standalone store. The package imports only database/sql (stdlib); the APP supplies the opened
+// *sql.DB and registers the driver (go-libsql/Turso or modernc), so census pulls no driver dependency yet
+// works out of the box. Its statements use ? placeholders and SQLite's ON CONFLICT upsert. Partition is an opaque column the store filters on but never interprets; an empty
 // partition on a partition-scoped read matches nothing, because every partition-scoped predicate rejects
 // an empty parameter before comparing — an unscoped read returns no rows, never every partition's. Times persist as INTEGER Unix nanoseconds with
 // NULL for an unset *time.Time. Only sealed material is stored (encrypted emails, deterministic hashes,
