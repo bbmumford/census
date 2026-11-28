@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2026 Brandon Miller-Mumford.
+ * Licensed under the MIT License; see LICENSE.
+ */
+
 // Package census is the scope-agnostic accounts system. It is a thin account-features service over
 // an opaque entity-relationship graph: users, organisations,
 // teams, and projects are opaque graph entities, and memberships/roles/ownership are opaque typed
