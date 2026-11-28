@@ -302,7 +302,7 @@ func (s *Service) VerifyAPIKey(ctx context.Context, rawKey string) (*APIKey, err
 	if k.RevokedAt != nil || (k.ExpiresAt != nil && now.After(*k.ExpiresAt)) {
 		return nil, ErrExpired
 	}
-	if err := s.store.TouchAPIKeyUsed(ctx, k.ID, now.UnixNano()); err != nil {
+	if err := s.store.TouchAPIKeyUsed(ctx, k.Partition, k.ID, now.UnixNano()); err != nil {
 		return nil, err
 	}
 	return k, nil

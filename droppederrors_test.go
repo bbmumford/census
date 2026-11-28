@@ -42,7 +42,7 @@ type failingTouch struct{ VaultStore }
 
 var errTouch = errors.New("use record unavailable")
 
-func (failingTouch) TouchAPIKeyUsed(context.Context, string, int64) error { return errTouch }
+func (failingTouch) TouchAPIKeyUsed(context.Context, string, string, int64) error { return errTouch }
 
 // VerifyAPIKey answers the store's error when the key's use cannot be recorded, and no key.
 func TestVerifyAPIKeyRefusesAKeyWhoseUseCannotBeRecorded(t *testing.T) {

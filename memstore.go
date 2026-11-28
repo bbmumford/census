@@ -197,6 +197,11 @@ func (m *MemStore) PutAPIKey(_ context.Context, k *APIKey) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, held := range m.apiKeys {
+		if held.KeyHash == k.KeyHash {
+			return ErrConflict
+		}
+	}
 	if k.ID == "" {
 		k.ID = m.newID()
 	}
@@ -242,11 +247,11 @@ func (m *MemStore) RevokeAPIKey(_ context.Context, partition, id string, revoked
 	return nil
 }
 
-func (m *MemStore) TouchAPIKeyUsed(_ context.Context, id string, usedAt int64) error {
+func (m *MemStore) TouchAPIKeyUsed(_ context.Context, partition, id string, usedAt int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k, ok := m.apiKeys[id]
-	if !ok {
+	if !ok || !partitionMatch(partition, k.Partition) {
 		return ErrNotFound
 	}
 	t := fromUnixNano(usedAt)

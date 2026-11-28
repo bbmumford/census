@@ -69,5 +69,7 @@ type VaultStore interface {
 	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListAPIKeysBySubject(ctx context.Context, partition, subject string) ([]*APIKey, error)
 	RevokeAPIKey(ctx context.Context, partition, id string, revokedAt int64) error
-	TouchAPIKeyUsed(ctx context.Context, id string, usedAt int64) error
+	// TouchAPIKeyUsed records a key's last use. It writes only a key held under partition, as every
+	// other key write does, and answers ErrNotFound for any other.
+	TouchAPIKeyUsed(ctx context.Context, partition, id string, usedAt int64) error
 }

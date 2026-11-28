@@ -62,7 +62,11 @@ func (s *SQLVaultStore) InitSchema(ctx context.Context) error {
 			capabilities TEXT NOT NULL DEFAULT '[]', createdAt INTEGER NOT NULL DEFAULT 0,
 			expiresAt INTEGER, revokedAt INTEGER, lastUsedAt INTEGER
 		)`,
-		`CREATE INDEX IF NOT EXISTS idxCensusApikeyHash ON censusApiKeys(keyHash)`,
+		// GetAPIKeyByHash answers one key for a hash, so no two keys may share one: the index is UNIQUE.
+		// A database may hold a plain index over keyHash named idxCensusApikeyHash; it is dropped so the
+		// UNIQUE index is the only one over keyHash.
+		`DROP INDEX IF EXISTS idxCensusApikeyHash`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idxCensusApiKeyHashUnique ON censusApiKeys(keyHash)`,
 		`CREATE INDEX IF NOT EXISTS idxCensusApikeySubject ON censusApiKeys(partitionId, subject)`,
 	}
 	for _, q := range stmts {
@@ -116,9 +120,10 @@ func readSliceJSON(s string) ([]string, error) {
 	return v, nil
 }
 
-// deletedOne reads a delete's or revoke's result: ErrNotFound when it changed no row, and the driver's
-// error when it cannot say, so a write that did happen is never reported as finding nothing.
-func deletedOne(res sql.Result) error {
+// changedOne reads the result of a write to one row by id (a delete, a revoke, a use record):
+// ErrNotFound when it changed no row, and the driver's error when it cannot say, so a write that did
+// happen is never reported as finding nothing.
+func changedOne(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -223,7 +228,7 @@ func (s *SQLVaultStore) DeleteCredential(ctx context.Context, partition, id stri
 	if err != nil {
 		return err
 	}
-	return deletedOne(res)
+	return changedOne(res)
 }
 
 // ── API keys ──
@@ -235,12 +240,28 @@ func (s *SQLVaultStore) PutAPIKey(ctx context.Context, k *APIKey) error {
 	if k.ID == "" {
 		k.ID = randomID()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO censusApiKeys
+	// A key hash is unique: a second key under a hash another holds is ErrConflict, checked in the
+	// insert's transaction; the UNIQUE index backstops a concurrent race.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollbackUnlessCommitted(tx)
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM censusApiKeys WHERE keyHash = ?`, k.KeyHash).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO censusApiKeys
 		(id, partitionId, subject, label, keyHash, capabilities, createdAt, expiresAt, revokedAt, lastUsedAt)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		k.ID, k.Partition, k.Subject, k.Label, k.KeyHash, jsonSlice(k.Capabilities), tnanos(k.CreatedAt),
-		ptrNanos(k.ExpiresAt), ptrNanos(k.RevokedAt), ptrNanos(k.LastUsedAt))
-	return err
+		ptrNanos(k.ExpiresAt), ptrNanos(k.RevokedAt), ptrNanos(k.LastUsedAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 const apiKeyCols = `id, partitionId, subject, label, keyHash, capabilities, createdAt, expiresAt, revokedAt, lastUsedAt`
@@ -298,12 +319,16 @@ func (s *SQLVaultStore) RevokeAPIKey(ctx context.Context, partition, id string, 
 	if err != nil {
 		return err
 	}
-	return deletedOne(res)
+	return changedOne(res)
 }
 
-func (s *SQLVaultStore) TouchAPIKeyUsed(ctx context.Context, id string, usedAt int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE censusApiKeys SET lastUsedAt = ? WHERE id = ?`, usedAt, id)
-	return err
+func (s *SQLVaultStore) TouchAPIKeyUsed(ctx context.Context, partition, id string, usedAt int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE censusApiKeys SET lastUsedAt = ?
+		WHERE id = ? AND (? <> '' AND partitionId = ?)`, usedAt, id, partition, partition)
+	if err != nil {
+		return err
+	}
+	return changedOne(res)
 }
 
 // rollbackUnlessCommitted is the deferred Rollback of every transaction in this
