@@ -36,6 +36,11 @@ type VaultStore interface {
 	GetCredentialByIdentifier(ctx context.Context, kind, identifierHash string) (*Credential, error)
 	ListCredentialsBySubject(ctx context.Context, partition, subject string) ([]*Credential, error)
 	DeleteCredential(ctx context.Context, partition, id string) error
+	// ReplaceCredentials replaces every credential of kind that subject holds under partition with
+	// creds, as one write: either every one of creds is stored and none of the replaced remain, or
+	// nothing changes. Each of creds names partition, subject and kind; one whose identifier another
+	// credential keeps is ErrConflict, and an empty partition is ErrUnscoped.
+	ReplaceCredentials(ctx context.Context, partition, subject, kind string, creds []*Credential) error
 
 	// ── Spent single-use ids ──
 	// SpendID records that the single-use token id is used and reports whether this call is the first

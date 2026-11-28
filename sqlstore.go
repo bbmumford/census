@@ -181,6 +181,44 @@ func (s *SQLVaultStore) PutCredential(ctx context.Context, c *Credential) error 
 	return tx.Commit()
 }
 
+func (s *SQLVaultStore) ReplaceCredentials(ctx context.Context, partition, subject, kind string, creds []*Credential) error {
+	if partition == "" {
+		return ErrUnscoped
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollbackUnlessCommitted(tx)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM censusCredentials
+		WHERE (? <> '' AND partitionId = ?) AND subject = ? AND kind = ?`, partition, partition, subject, kind); err != nil {
+		return err
+	}
+	for _, c := range creds {
+		if c.Partition != partition || c.Subject != subject || c.Kind != kind {
+			return ErrConflict
+		}
+		if c.ID == "" {
+			c.ID = randomID()
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM censusCredentials
+			WHERE (kind = ? AND identifierHash = ?) OR id = ?`, c.Kind, c.IdentifierHash, c.ID).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return ErrConflict
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO censusCredentials
+			(id, partitionId, subject, kind, identifierHash, secret, createdAt, updatedAt)
+			VALUES (?,?,?,?,?,?,?,?)`,
+			c.ID, c.Partition, c.Subject, c.Kind, c.IdentifierHash, c.Secret, tnanos(c.CreatedAt), tnanos(c.UpdatedAt)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func scanCredential(sc interface{ Scan(...any) error }) (*Credential, error) {
 	var c Credential
 	var created, updated int64

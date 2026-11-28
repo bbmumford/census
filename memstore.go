@@ -83,6 +83,37 @@ func (m *MemStore) PutCredential(_ context.Context, c *Credential) error {
 	return nil
 }
 
+func (m *MemStore) ReplaceCredentials(_ context.Context, partition, subject, kind string, creds []*Credential) error {
+	if partition == "" {
+		return ErrUnscoped
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	replaced := func(e *Credential) bool { return e.Partition == partition && e.Subject == subject && e.Kind == kind }
+	for _, c := range creds {
+		if c.Partition != partition || c.Subject != subject || c.Kind != kind {
+			return ErrConflict
+		}
+		for _, e := range m.credentials {
+			if !replaced(e) && ((e.Kind == c.Kind && e.IdentifierHash == c.IdentifierHash) || (c.ID != "" && e.ID == c.ID)) {
+				return ErrConflict
+			}
+		}
+	}
+	for id, e := range m.credentials {
+		if replaced(e) {
+			delete(m.credentials, id)
+		}
+	}
+	for _, c := range creds {
+		if c.ID == "" {
+			c.ID = m.newID()
+		}
+		m.credentials[c.ID] = cloneCredential(c)
+	}
+	return nil
+}
+
 func (m *MemStore) GetCredentialByIdentifier(_ context.Context, kind, identifierHash string) (*Credential, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

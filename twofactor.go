@@ -232,8 +232,9 @@ func (s *Service) DeleteTOTP(ctx context.Context, partition, subject string) err
 // EACH DIGEST IS THE HASHER'S, never the Encryptor's: a backup code is verified
 // by comparison and never has to come back out, so sealing it would hold a
 // recoverable copy of a credential for no reader. The previous set is dropped
-// first, so a code from it cannot be redeemed after the subject has been shown a
-// new set.
+// and the new one stored in one store write (VaultStore.ReplaceCredentials), so a
+// code from it cannot be redeemed after the subject has been shown a new set, and
+// a failure part way leaves the previous set whole rather than part of either.
 //
 // A POSITION HELD UNDER ANOTHER PARTITION IS ErrConflict BEFORE ANYTHING IS
 // DROPPED. backupIdentifier carries no partition, while the list and the drop
@@ -262,25 +263,14 @@ func (s *Service) ReplaceBackupCodes(ctx context.Context, partition, subject str
 			return ErrConflict
 		}
 	}
-	existing, err := s.store.ListCredentialsBySubject(ctx, partition, subject)
-	if err != nil {
-		return err
-	}
-	for _, c := range existing {
-		if c.Kind != KindBackupCode {
-			continue
-		}
-		if err := s.store.DeleteCredential(ctx, partition, c.ID); err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-	}
 	now := s.now()
+	set := make([]*Credential, len(codes))
 	for i, code := range codes {
 		digest, err := s.hasher.Hash(code)
 		if err != nil {
 			return err
 		}
-		if err := s.store.PutCredential(ctx, &Credential{
+		set[i] = &Credential{
 			Partition:      partition,
 			Subject:        subject,
 			Kind:           KindBackupCode,
@@ -288,11 +278,9 @@ func (s *Service) ReplaceBackupCodes(ctx context.Context, partition, subject str
 			Secret:         digest,
 			CreatedAt:      now,
 			UpdatedAt:      now,
-		}); err != nil {
-			return err
 		}
 	}
-	return nil
+	return s.store.ReplaceCredentials(ctx, partition, subject, KindBackupCode, set)
 }
 
 // BackupCodesRemaining answers how many of a subject's backup codes are unspent
